@@ -358,8 +358,10 @@ def list_invites(request: Request, u: User = Depends(require_admin)):
         for inv in s.exec(select(Invite).order_by(Invite.id.desc())).all():
             cv = s.get(CV, inv.cv_id)
             rep = s.exec(select(InterviewReport).where(InterviewReport.invite_id == inv.id)).first()
+            fp = os.path.join(RECORDINGS_DIR, f"frames_{inv.id}.jpg")
+            live = (not inv.completed) and os.path.exists(fp) and (time.time() - os.path.getmtime(fp)) < 30
             out.append({
-                "id": inv.id, "token": inv.token, "completed": inv.completed,
+                "id": inv.id, "token": inv.token, "completed": inv.completed, "live": live,
                 "link": f"{base_url(request)}/interview/{inv.token}",
                 "candidate": cv.candidate_name if cv else f"CV#{inv.cv_id}",
                 "vacancy_id": inv.vacancy_id,
@@ -437,6 +439,29 @@ def interview_start(token: str):
         return {"intro": intro, "question": questions[0], "total": len(questions)}
 
 
+def _finalize(s, inv, rep, vac, cv, note=""):
+    """Score whatever transcript exists and produce a final report (used on finish, admin stop, candidate exit)."""
+    transcript = rep.transcript_list()
+    scores = [t.get("score", 5) for t in transcript if t.get("score") is not None]
+    rep.total_score = round(sum(scores) / len(scores), 1) if scores else 0
+    if transcript:
+        final = llm.chat_json([
+            {"role": "system", "content": "You write final hiring reports. Be decisive."},
+            {"role": "user", "content": f"Role: {vac.title}\nInterview may have ended early: {note}\nTranscript with scores: {json.dumps(transcript)[:5000]}\nCV summary: {cv.candidate_name}, skills: {', '.join(cv.skills_list())}\n\nReturn JSON: {{\"decision\": \"HIRE|CONSIDER|REJECT\", \"justification\": \"3-4 sentences\", \"strengths\": [\"...\"], \"weaknesses\": [\"...\"], \"areas\": [\"knowledge areas demonstrated\"]}}"},
+        ])
+        rep.decision = final.get("decision", "CONSIDER") if final.get("decision") in ("HIRE", "CONSIDER", "REJECT") else "CONSIDER"
+        rep.justification = str(final.get("justification", ""))
+        rep.strengths = json.dumps([str(x) for x in final.get("strengths", [])][:6])
+        rep.weaknesses = json.dumps([str(x) for x in final.get("weaknesses", [])][:6])
+        rep.areas = json.dumps([str(x) for x in final.get("areas", [])][:8])
+    else:
+        rep.decision = "CONSIDER"
+        rep.justification = f"Interview ended before any answers were given ({note or 'no transcript'})."
+        rep.strengths = "[]"; rep.weaknesses = "[]"; rep.areas = "[]"
+    inv.completed = True
+    s.add(rep); s.add(inv); s.commit()
+
+
 @app.post("/api/interview/{token}/answer")
 def interview_answer(token: str, body: dict):
     iid, cv_id, vid, _ = _interview_invite(token)
@@ -492,19 +517,7 @@ def interview_answer(token: str, body: dict):
         s.add(rep)
         s.add(inv)
         if done:
-            scores = [t.get("score", 5) for t in transcript if t.get("score") is not None]
-            rep.total_score = round(sum(scores) / len(scores), 1) if scores else 0
-            final = llm.chat_json([
-                {"role": "system", "content": "You write final hiring reports. Be decisive."},
-                {"role": "user", "content": f"Role: {vac.title}\nTranscript with scores: {json.dumps(transcript)[:5000]}\nCV summary: {cv.candidate_name}, skills: {', '.join(cv.skills_list())}\n\nReturn JSON: {{\"decision\": \"HIRE|CONSIDER|REJECT\", \"justification\": \"3-4 sentences\", \"strengths\": [\"...\"], \"weaknesses\": [\"...\"], \"areas\": [\"knowledge areas demonstrated\"]}}"},
-            ])
-            rep.decision = final.get("decision", "CONSIDER") if final.get("decision") in ("HIRE", "CONSIDER", "REJECT") else "CONSIDER"
-            rep.justification = str(final.get("justification", ""))
-            rep.strengths = json.dumps([str(x) for x in final.get("strengths", [])][:6])
-            rep.weaknesses = json.dumps([str(x) for x in final.get("weaknesses", [])][:6])
-            rep.areas = json.dumps([str(x) for x in final.get("areas", [])][:8])
-            inv.completed = True
-            s.add(inv)
+            _finalize(s, inv, rep, vac, cv)
             verdict_note = f"Interview complete. Final score: {rep.total_score}/10."
         else:
             verdict_note = ""
@@ -537,6 +550,108 @@ async def interview_video(token: str, video: UploadFile = File(...)):
             s.add(rep); s.commit()
     print(f"[video] saved {fn} ({len(data) // 1024} KB) for invite {iid}")
     return {"ok": True, "video": f"/recordings/{fn}"}
+
+
+def _finalize_partial(token: str, note: str):
+    """Finalize an interview early (admin stop or candidate exit) and return basic info."""
+    iid, cv_id, vid, _ = _interview_invite(token)
+    with contextlib.closing(Session(engine)) as s:
+        inv = s.get(Invite, iid)
+        if inv.completed:
+            return {"ok": True, "already_done": True}
+        vac, cv = s.get(Vacancy, vid), s.get(CV, cv_id)
+        rep = s.exec(select(InterviewReport).where(InterviewReport.invite_id == iid)).first()
+        if not rep:
+            rep = InterviewReport(invite_id=iid, cv_id=cv_id, vacancy_id=vid)
+            s.add(rep); s.commit(); s.refresh(rep)
+        _finalize(s, inv, rep, vac, cv, note=note)
+        return {"ok": True, "answered": inv.progress, "decision": rep.decision, "score": rep.total_score}
+
+
+@app.post("/api/interview/{token}/stop")
+def interview_stop(token: str, u: User = Depends(require_admin)):
+    """Admin terminates the ongoing interview; partial answers are scored into a report."""
+    res = _finalize_partial(token, "terminated by the recruiter from the admin panel")
+    print(f"[interview] admin stopped {token}: {res}")
+    return res
+
+
+@app.post("/api/interview/{token}/exit")
+def interview_exit(token: str):
+    """Candidate leaves the interview early; partial answers are scored into a report."""
+    res = _finalize_partial(token, "candidate left the interview early")
+    print(f"[interview] candidate exited {token}: {res}")
+    return res
+
+
+@app.post("/api/interview/{token}/frame")
+async def interview_frame(token: str, frame: UploadFile = File(...)):
+    """Candidate page uploads a live camera snapshot for the admin 'connect' viewer."""
+    iid, _, _, inv = _interview_invite(token)
+    if inv.completed:
+        raise HTTPException(400, "Interview finished")
+    data = await frame.read()
+    if data:
+        with open(os.path.join(RECORDINGS_DIR, f"frames_{iid}.jpg"), "wb") as f:
+            f.write(data)
+    return {"ok": True}
+
+
+@app.get("/api/interview/{token}/live")
+def interview_live(token: str, u: User = Depends(require_admin)):
+    """Admin live view: latest camera frame + progress."""
+    iid, cv_id, vid, inv = _interview_invite(token)
+    fp = os.path.join(RECORDINGS_DIR, f"frames_{iid}.jpg")
+    has = os.path.exists(fp) and (time.time() - os.path.getmtime(fp)) < 30
+    with contextlib.closing(Session(engine)) as s:
+        cv, vac = s.get(CV, cv_id), s.get(Vacancy, vid)
+        return {
+            "candidate": cv.candidate_name if cv else "?", "vacancy": vac.title if vac else "?",
+            "completed": inv.completed, "answered": inv.progress,
+            "questions": len(json.loads(inv.questions)),
+            "frame": f"/recordings/frames_{iid}.jpg?t={int(os.path.getmtime(fp))}" if has else None,
+        }
+
+
+@app.get("/api/recordings")
+def recordings(u: User = Depends(require_admin)):
+    """Video folder: all interview recordings with candidate/vacancy context."""
+    with contextlib.closing(Session(engine)) as s:
+        out = []
+        for fn in sorted(os.listdir(RECORDINGS_DIR), reverse=True):
+            if fn.startswith("frames_"):
+                continue
+            p = os.path.join(RECORDINGS_DIR, fn)
+            if not os.path.isfile(p):
+                continue
+            rep = s.exec(select(InterviewReport).where(InterviewReport.video_path == fn)).first()
+            cv = s.get(CV, rep.cv_id) if rep else None
+            vac = s.get(Vacancy, rep.vacancy_id) if rep else None
+            out.append({
+                "file": fn, "url": f"/recordings/{fn}",
+                "size_kb": round(os.path.getsize(p) / 1024),
+                "candidate": cv.candidate_name if cv else "unknown",
+                "vacancy": vac.title if vac else "?",
+                "decision": rep.decision if rep else None,
+                "score": rep.total_score if rep else None,
+                "date": time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(p))),
+            })
+        return out
+
+
+@app.delete("/api/recordings/{filename}")
+def del_recording(filename: str, u: User = Depends(require_admin)):
+    if "/" in filename or "\\" in filename or not filename.startswith("interview_"):
+        raise HTTPException(400, "Bad filename")
+    p = os.path.join(RECORDINGS_DIR, filename)
+    if os.path.exists(p):
+        os.remove(p)
+    with contextlib.closing(Session(engine)) as s:
+        for rep in s.exec(select(InterviewReport).where(InterviewReport.video_path == filename)).all():
+            rep.video_path = ""
+            s.add(rep)
+        s.commit()
+    return {"ok": True}
 
 
 # ---------------- reports (admin) ----------------

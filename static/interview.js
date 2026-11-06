@@ -93,6 +93,74 @@ function stopRecordingAndUpload() {
   });
 }
 
+/* ---------- live frames + status polling (for admin viewer / remote stop) ---------- */
+let INTERVIEW_OVER = false, FRAME_TIMER = null, STATUS_TIMER = null;
+
+function startLiveTracking() {
+  FRAME_TIMER = setInterval(() => {
+    const v = document.getElementById("preview");
+    if (INTERVIEW_OVER || !CAM_STREAM || !v.videoWidth) return;
+    try {
+      const c = document.createElement("canvas");
+      c.width = 320; c.height = 240;
+      c.getContext("2d").drawImage(v, 0, 0, 320, 240);
+      c.toBlob((b) => {
+        if (!b || INTERVIEW_OVER) return;
+        const fd = new FormData();
+        fd.append("frame", b, "frame.jpg");
+        fetch(`/api/interview/${TOKEN}/frame`, { method: "POST", body: fd }).catch(() => {});
+      }, "image/jpeg", 0.55);
+    } catch {}
+  }, 5000);
+  STATUS_TIMER = setInterval(async () => {
+    if (INTERVIEW_OVER || BUSY) return;
+    try {
+      const info = await api(`/api/interview/${TOKEN}`);
+      if (info.completed) terminatedByRecruiter();
+    } catch {}
+  }, 8000);
+}
+
+function stopLiveTracking() {
+  INTERVIEW_OVER = true;
+  if (FRAME_TIMER) clearInterval(FRAME_TIMER);
+  if (STATUS_TIMER) clearInterval(STATUS_TIMER);
+}
+
+async function exitInterview() {
+  if (!confirm("Leave the interview? Your answers so far will be scored and sent to the recruiter.")) return;
+  stopLiveTracking();
+  ttsStop();
+  toast("Leaving interview…");
+  try { await api(`/api/interview/${TOKEN}/exit`, { method: "POST" }); } catch {}
+  await stopRecordingAndUpload();
+  document.getElementById("interview").classList.add("hidden");
+  const f = document.getElementById("final");
+  f.classList.remove("hidden");
+  f.innerHTML = `<div class="text-center py-10">
+    <div class="text-5xl mb-3">👋</div>
+    <h2 class="text-xl font-semibold mb-2">You have left the interview</h2>
+    <p class="text-slate-400 text-sm max-w-md mx-auto">Your partial answers were scored and saved. The recruiter can see your report and video recording. You can close this page now.</p>
+  </div>`;
+}
+
+function terminatedByRecruiter() {
+  if (INTERVIEW_OVER) return;
+  stopLiveTracking();
+  ttsStop();
+  if (RECORDING) toggleMic();
+  stopRecordingAndUpload();
+  document.getElementById("interview").classList.add("hidden");
+  const f = document.getElementById("final");
+  f.classList.remove("hidden");
+  f.innerHTML = `<div class="text-center py-10">
+    <div class="text-5xl mb-3">🛑</div>
+    <h2 class="text-xl font-semibold mb-2">Interview was ended by the recruiter</h2>
+    <p class="text-slate-400 text-sm max-w-md mx-auto">Your answers so far have been scored and saved, together with the video recording. You can close this page now.</p>
+  </div>`;
+  window.scrollTo(0, 0);
+}
+
 /* ---------- init ---------- */
 async function init() {
   let info;
@@ -190,6 +258,7 @@ async function startInterview() {
   try {
     const res = await api(`/api/interview/${TOKEN}/start`, { method: "POST" });
     startRecording();
+    startLiveTracking();
     document.getElementById("setup").classList.add("hidden");
     document.getElementById("interview").classList.remove("hidden");
     TOTAL = res.total;
@@ -252,6 +321,7 @@ async function submitAnswer() {
 
 async function finishInterview(report) {
   BUSY = false;
+  stopLiveTracking();
   document.getElementById("send-btn").textContent = "Send";
   document.getElementById("interview").classList.add("hidden");
   const f = document.getElementById("final");

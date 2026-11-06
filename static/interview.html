@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Interview — Nova</title>
+<title>Ishveren · AI Interview</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script>tailwind.config = { darkMode: 'class' }</script>
 <style>
@@ -55,7 +55,7 @@ body{background:#0b1020}
 <div id="toasts" class="fixed top-4 right-4 z-50 space-y-2 w-80"></div>
 <div class="max-w-3xl mx-auto p-6">
   <header class="flex items-center justify-between mb-6">
-    <h1 class="text-2xl font-bold">🎙 AI Interview</h1>
+    <h1 class="text-2xl font-bold">🧑‍💼 Ishveren · AI Interview</h1>
     <div class="flex items-center gap-3">
       <span id="rec-badge" class="rec-badge hidden"><span class="rec-dot"></span> REC</span>
       <span id="hdr-info" class="text-sm text-slate-400"></span>
@@ -90,7 +90,13 @@ body{background:#0b1020}
 
   <div id="interview" class="hidden space-y-4">
     <div class="bg-slate-900/60 border border-slate-800 rounded-2xl p-5">
-      <div class="flex items-center justify-between text-xs text-slate-500 mb-3"><span>NOVA · AI INTERVIEWER</span><span id="q-progress"></span></div>
+      <div class="flex items-center justify-between text-xs text-slate-500 mb-3">
+        <span>NOVA · AI INTERVIEWER</span>
+        <div class="flex items-center gap-2">
+          <span id="q-progress"></span>
+          <button onclick="exitInterview()" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-red-900 border border-slate-700 text-slate-300">🚪 Exit interview</button>
+        </div>
+      </div>
       <div class="flex gap-5 items-start">
         <div class="avatar shrink-0 scale-[.62] -my-6" id="avatar2">
           <div class="ring"></div>

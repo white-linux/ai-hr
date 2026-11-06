@@ -326,9 +326,76 @@ async function loadInvites() {
         <button onclick="copyText('${inv.link}')" class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600">Copy</button>
       </div>
       ${rep ? `<button onclick="showReport(${rep.id})" class="mt-1 text-xs text-indigo-400 underline">View report & transcript</button>` : ""}
+      <div class="flex gap-1.5 mt-1.5">
+        ${!inv.completed ? `<button onclick="connectLive('${inv.token}', ${inv.id})" class="text-xs px-2 py-1 rounded ${inv.live ? "bg-emerald-700 hover:bg-emerald-600 animate-pulse" : "bg-slate-700 hover:bg-slate-600"}">👁 Connect${inv.live ? " · LIVE" : ""}</button>
+        <button onclick="stopInterview('${inv.token}')" class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-red-700">⏹ Stop</button>` : ""}
+      </div>
     </div>`;
   }
   box.innerHTML = html || '<p class="text-slate-500">No interviews in this status yet.</p>';
+}
+
+async function stopInterview(token) {
+  if (!confirm("Stop this interview? Partial answers will be scored into a report.")) return;
+  try {
+    const res = await api(`/api/interview/${token}/stop`, { method: "POST" });
+    toast(res.already_done ? "Interview was already finished" : `Interview stopped — decision: ${res.decision}, score ${res.score}/10`, "ok");
+  } catch {}
+  loadInvites();
+}
+
+let LIVE_TIMER = null;
+function connectLive(token, iid) {
+  modalHtml(`<h3 class="font-semibold text-lg mb-1">👁 Live interview</h3>
+    <div id="live-info" class="text-sm text-slate-400 mb-2">Connecting…</div>
+    <div id="live-frame" class="w-full aspect-video bg-black rounded-xl border border-slate-700 flex items-center justify-center text-slate-500 text-sm mb-2">waiting for candidate's camera…</div>
+    <p class="text-xs text-slate-500">Live snapshot updates every ~5 seconds (candidate's camera frame). Use ⏹ Stop on the interview card to terminate it.</p>
+    <div class="text-right mt-3"><button onclick="LIVE_TIMER&&clearInterval(LIVE_TIMER);document.getElementById('info-modal').remove()" class="px-4 py-1.5 rounded-lg bg-slate-800 text-sm">Close</button></div>`);
+  const poll = async () => {
+    let d;
+    try { d = await api(`/api/interview/${token}/live`); } catch { return; }
+    const box = document.getElementById("live-info");
+    if (!box) { clearInterval(LIVE_TIMER); return; }
+    if (d.completed) {
+      box.innerHTML = `<span class="text-emerald-400">Interview finished — candidate: ${esc(d.candidate)}, answered ${d.answered}/${d.questions}.</span>`;
+      document.getElementById("live-frame").innerHTML = '<span class="text-slate-500 text-sm">stream ended</span>';
+      clearInterval(LIVE_TIMER); LIVE_TIMER = null;
+      loadInvites();
+      return;
+    }
+    box.innerHTML = `${esc(d.candidate)} · ${esc(d.vacancy)} — answered <b class="text-indigo-300">${d.answered}/${d.questions}</b>`;
+    const img = document.getElementById("live-frame");
+    if (d.frame) img.innerHTML = `<img src="${d.frame}" class="w-full h-full object-cover rounded-xl">`;
+    else if (img.dataset.hadFrame !== "1") img.innerHTML = '<span class="text-slate-500 text-sm">candidate camera not visible yet…</span>';
+    if (d.frame) img.dataset.hadFrame = "1";
+  };
+  if (LIVE_TIMER) clearInterval(LIVE_TIMER);
+  poll();
+  LIVE_TIMER = setInterval(poll, 2500);
+}
+
+async function showVideos() {
+  let vids = [];
+  try { vids = await api("/api/recordings"); } catch { return; }
+  const items = vids.map(v => `
+    <div class="bg-slate-800/50 rounded-xl p-3">
+      <video src="${v.url}" controls preload="none" class="w-full rounded-lg bg-black max-h-48"></video>
+      <div class="flex items-center justify-between mt-2 gap-2">
+        <div class="min-w-0">
+          <div class="text-sm font-medium truncate">${esc(v.candidate)} <span class="text-slate-500 text-xs">· ${esc(v.vacancy)}</span></div>
+          <div class="text-xs text-slate-500">${v.date} · ${v.size_kb} KB${v.decision ? ` · <b>${esc(v.decision)}</b> ${v.score ?? "?"}/10` : ""}</div>
+        </div>
+        <button onclick="confirmDeleteVideo('${v.file}')" class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-red-700 shrink-0">🗑</button>
+      </div>
+    </div>`).join("");
+  modalHtml(`<h3 class="font-semibold text-lg mb-3">🎥 Interview recordings</h3>
+    ${items || '<p class="text-slate-500 text-sm">No recordings yet. Videos appear here after candidates finish their interviews.</p>'}`);
+}
+
+async function confirmDeleteVideo(file) {
+  if (!confirm("Delete this recording?")) return;
+  await api(`/api/recordings/${file}`, { method: "DELETE" });
+  showVideos();
 }
 
 function showReport(id) {
