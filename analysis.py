@@ -237,7 +237,7 @@ def fit_score(cv: CV, vacancy) -> dict:
     out = llm.chat_json([
         {"role": "system", "content": "You are a senior recruiter. Score candidate-job fit strictly against the stated requirements. Rubric: 85-100 meets all must-haves with proven depth; 70-84 meets most must-haves; 50-69 partial fit / notable gaps; 30-49 weak fit; <30 wrong profile. Required experience years are a must-have. Cite concrete evidence from the CV in strengths; never invent facts. missing_skills = requirements not evidenced in the CV."},
         {"role": "user", "content": f"VACANCY: {vacancy.title} ({vacancy.category})\nDescription: {vacancy.description}\nRequirements: {vacancy.requirements}\n\nCANDIDATE: {cv.candidate_name}, {cv.years_exp} yrs experience\nSkills: {', '.join(cv.skills_list())}\nCV (truncated):\n{cv.text[:4000]}\n\nReturn JSON: {{\"fit_score\": 0-100, \"strengths\": [\"...\"], \"weaknesses\": [\"...\"], \"missing_skills\": [\"...\"], \"summary\": \"2-3 sentences\"}}"},
-    ])
+    ], model=llm.FAST_MODEL)
     try:
         out["fit_score"] = max(0, min(100, int(float(out.get("fit_score", 0)))))
     except Exception:
@@ -246,6 +246,11 @@ def fit_score(cv: CV, vacancy) -> dict:
         if not isinstance(out.get(k), list):
             out[k] = [str(out.get(k) or "")]
     return out
+
+
+def vacancy_hash(vac) -> str:
+    import hashlib
+    return hashlib.sha1(f"{vac.title}|{vac.category}|{vac.description}|{vac.requirements}".encode()).hexdigest()[:16]
 
 
 # ---------------- Fast path: network checks in parallel + ONE LLM call ----------------
@@ -288,11 +293,11 @@ def score_all(cv: CV, vac, h_score: int, fp: dict) -> dict:
          "3) fit_score 0-100 vs vacancy requirements. Rubric: 85-100 meets all must-haves with proven depth; 70-84 most must-haves; 50-69 partial fit; 30-49 weak; <30 wrong profile. "
          "Required years of experience are a must-have. Use only evidence from the CV, never invent facts."},
         {"role": "user", "content": f"VACANCY: {vac.title} ({vac.category})\nDescription: {vac.description}\nRequirements: {vac.requirements}\n\n"
-         f"CANDIDATE: {cv.candidate_name}, {cv.years_exp} yrs\nSkills: {', '.join(cv.skills_list())}\nCV:\n{cv.text[:3500]}\n\n"
+         f"CANDIDATE: {cv.candidate_name}, {cv.years_exp} yrs\nSkills: {', '.join(cv.skills_list())}\nCV:\n{cv.text[:3000]}\n\n"
          f"Local stylometry AI-score: {h_score}/100\nGitHub data: {gh_brief}\nOther links: {links_brief}\n\n"
          'Return JSON: {"ai_probability": 0-100, "ai_reasons": ["max 3 short"], "footprint_summary": "1-2 sentences", "consistent": true/false/null, '
          '"fit_score": 0-100, "strengths": ["max 4"], "weaknesses": ["max 3"], "missing_skills": ["..."], "summary": "2 sentences"}'},
-    ])
+    ], model=llm.FAST_MODEL)
     try:
         out["fit_score"] = max(0, min(100, int(float(out.get("fit_score", 0)))))
     except Exception:
@@ -373,6 +378,7 @@ def _analyze_one(vacancy_id: int, cid: int, run_id: str, force: bool = False):
             a.summary = f.get("summary", "")
             a.footprint_summary = fp.get("summary", "")
             a.status = "done"
+            a.vac_hash = vacancy_hash(vac)
             a.updated_at = now()
             s.add(a); s.commit()
             _set(3, "Done", done=True)

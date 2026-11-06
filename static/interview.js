@@ -128,7 +128,7 @@ function startLiveTracking() {
     try {
       const info = await api(`/api/interview/${TOKEN}`);
       if (info.completed) terminatedByRecruiter();
-    } catch {}
+    } catch (e) { if (/not found/i.test(e.message)) terminatedByRecruiter(); }
   }, 8000);
 }
 

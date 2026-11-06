@@ -43,15 +43,15 @@ def _strip(text: str):
 
 # GLM "thinking" mode makes answers ~3x slower (≈22s vs ≈7s per call); off by default.
 THINKING = os.environ.get("ZAI_THINKING", "disabled")
+# Fast model for bulk CV work (parsing, AI-detection, fit scoring): ~4.6s vs ~14s for glm-4.6 on the same prompt.
+FAST_MODEL = os.environ.get("ZAI_FAST_MODEL", "glm-4.5-air")
 
 
-def chat(messages, json_mode=False, temperature=0.4, max_retries=2, thinking=None):
+def chat(messages, json_mode=False, temperature=0.4, max_retries=3, thinking=None, model=None):
     """Call Z.ai chat completions; retries, model fallback, endpoint fallback."""
     last_err = None
     thinking = thinking or THINKING
-    models = [_model()]
-    if models[0] != "glm-4.5":
-        models.append("glm-4.5")
+    models = [m for m in dict.fromkeys([model or _model(), _model(), "glm-4.5"]) if m]
     for model in models:
         for ep in ENDPOINTS:
             url = ep + "/chat/completions"
@@ -74,6 +74,11 @@ def chat(messages, json_mode=False, temperature=0.4, max_retries=2, thinking=Non
                     if r.status_code == 400 and "thinking" in r.text.lower() and thinking:
                         thinking = None  # endpoint doesn't support the flag -> retry without it
                         continue
+                    if r.status_code == 429:  # rate limit under parallel load -> back off and retry same model
+                        last_err = f"429: {r.text[:120]}"
+                        import random, time
+                        time.sleep(1.0 + attempt * 1.5 + random.random())
+                        continue
                     if r.status_code in (401, 402, 403):
                         last_err = f"{r.status_code}: {r.text[:200]}"
                         break  # try next endpoint
@@ -90,11 +95,11 @@ def chat(messages, json_mode=False, temperature=0.4, max_retries=2, thinking=Non
     raise RuntimeError(f"LLM call failed: {last_err}")
 
 
-def chat_json(messages, temperature=0.2, thinking=None):
+def chat_json(messages, temperature=0.2, thinking=None, model=None):
     """chat() that guarantees a parsed JSON object; asks for JSON and re-tries parsing."""
     msgs = list(messages)
     for i in range(2):
-        text = chat(msgs, json_mode=(i == 0), temperature=temperature, thinking=thinking)
+        text = chat(msgs, json_mode=(i == 0), temperature=temperature, thinking=thinking, model=model)
         data = _strip(text)
         if isinstance(data, dict):
             return data

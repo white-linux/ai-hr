@@ -1,4 +1,5 @@
 .venv/
+PUBLIC_URL.txt
 __pycache__/
 *.pyc
 hr.db
@@ -7,3 +8,6 @@ PASSWD.txt
 *.log
 recordings/
 uploads/
+.secret
+ADMIN_PASS.txt
+*.pid

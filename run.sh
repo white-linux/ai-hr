@@ -14,8 +14,9 @@ if ! .venv/bin/python -c "import fastapi, uvicorn, sqlmodel, httpx, pypdf, docx,
   .venv/bin/pip install -q -r requirements.txt
 fi
 
+[ -s ADMIN_PASS.txt ] && export ADMIN_PASSWORD="$(cat ADMIN_PASS.txt)"
 echo "[*] Seeding database (idempotent)…"
 .venv/bin/python -c "from models import init_db; init_db(seed=True); print('DB ready')"
 
-echo "[*] Starting server on http://localhost:8000 (admin / admin123)"
+echo "[*] Starting server on http://localhost:8000 (admin / ${ADMIN_PASSWORD:-admin123})"
 exec .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000

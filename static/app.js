@@ -88,7 +88,8 @@ async function logout() { await api("/api/auth/logout", { method: "POST" }).catc
 /* ---------- boot ---------- */
 (async function boot() {
   for (const c of CATS) $("v-cat").insertAdjacentHTML("beforeend", `<option>${c}</option>`);
-  try { ME = await api("/api/auth/me", { silent: true }); } catch { return; }
+  try { ME = await api("/api/auth/me", { silent: true }); }
+  catch { api("/api/auth/config", { silent: true }).then(c => $("demo-hint").classList.toggle("hidden", !c.demo_hint)).catch(() => {}); return; }
   $("auth-view").classList.add("hidden");
   $("app-view").classList.remove("hidden");
   $("user-label").textContent = `${ME.name} · ${ME.role === "ADMIN" ? "recruiter" : "candidate"}`;
@@ -309,7 +310,8 @@ async function runAnalysis(force = false) {
   if (force && !confirm("Full re-scan: re-run AI detection and online footprint for every CV (slower). Continue?")) return;
   try {
     const res = await api("/api/analyze", { method: "POST", body: { vacancy_id: SEL_VAC, force } });
-    toast(`Analyzing ${res.cv_count} CV(s) — results appear as soon as each CV is ready`, "ok");
+    if (!res.run_id) { toast(`All ${res.up_to_date} CV(s) are already analyzed for this vacancy. Use ⟳ Full re-scan to redo.`, "ok"); loadResults(); return; }
+    toast(`Analyzing ${res.cv_count} new CV(s)${res.up_to_date ? `, ${res.up_to_date} already up to date` : ""} — results appear as each CV is ready`, "ok");
     pollProgress(res.run_id, SEL_VAC);
   } catch {}
 }
@@ -421,9 +423,10 @@ const STATUS_META = {
   HIRE: { label: "✅ HIRE", cls: "bg-emerald-900 text-emerald-400" },
   CONSIDER: { label: "⚠ CONSIDER", cls: "bg-amber-900 text-amber-400" },
   REJECT: { label: "❌ REJECT", cls: "bg-red-900 text-red-400" },
+  STOPPED: { label: "⏹ Stopped", cls: "bg-slate-700 text-slate-400" },
 };
 function inviteStatus(inv) {
-  if (inv.completed) return inv.decision || "CONSIDER";
+  if (inv.completed) return inv.decision || "STOPPED";
   return inv.answered > 0 || inv.live ? "inprogress" : "pending";
 }
 
@@ -439,7 +442,7 @@ async function loadInvites(silent = false) {
 function setInviteFilter(k) { INVITE_FILTER = k; renderInvites(); }
 
 function renderInvites() {
-  const counts = { all: INVITES.length, pending: 0, inprogress: 0, HIRE: 0, CONSIDER: 0, REJECT: 0 };
+  const counts = { all: INVITES.length, pending: 0, inprogress: 0, HIRE: 0, CONSIDER: 0, REJECT: 0, STOPPED: 0 };
   INVITES.forEach(i => counts[inviteStatus(i)]++);
   $("invite-stats").innerHTML = Object.entries(counts).map(([k, n]) => {
     const meta = k === "all" ? { label: "All", cls: "bg-slate-800 text-slate-200" } : STATUS_META[k];
@@ -458,17 +461,24 @@ function renderInvites() {
       <div class="flex flex-wrap gap-1.5 mt-1.5">
         ${!inv.completed ? `<button onclick="copyText('${esc(inv.link)}')" class="text-[11px] px-2 py-1 rounded bg-slate-700 hover:bg-slate-600">🔗 Copy link</button>
           <button onclick="connectLive('${esc(inv.token)}')" class="text-[11px] px-2 py-1 rounded ${inv.live ? "bg-emerald-700 hover:bg-emerald-600 animate-pulse" : "bg-slate-700 hover:bg-slate-600"}">👁 ${inv.live ? "LIVE" : "Watch"}</button>
-          ${inv.answered || inv.live ? `<button onclick="stopInterview('${esc(inv.token)}')" class="text-[11px] px-2 py-1 rounded bg-slate-700 hover:bg-red-700">⏹ Stop</button>` : `<button onclick="delInvite(${inv.id})" class="text-[11px] px-2 py-1 rounded bg-slate-700 hover:bg-red-700">✕ Revoke</button>`}` : ""}
+          <button onclick="stopInterview('${esc(inv.token)}')" class="text-[11px] px-2 py-1 rounded bg-slate-700 hover:bg-amber-700" title="End the interview now; answers so far are scored into a report">⏹ Stop</button>` : ""}
         ${rep && inv.completed ? `<button onclick="showReport(${rep.id})" class="text-[11px] px-2 py-1 rounded bg-indigo-700 hover:bg-indigo-600">📋 Report${rep.video ? " · 🎥" : ""}</button>` : ""}
+        <button onclick="delInvite(${inv.id})" class="text-[11px] px-2 py-1 rounded bg-slate-700 hover:bg-red-700 ml-auto" title="Delete interview, report and video">🗑 Delete</button>
       </div>
     </div>`;
   }).join("") || '<p class="text-slate-500 text-sm text-center py-6">No interviews here yet.<br><span class="text-xs">Invite candidates from the ranking.</span></p>';
 }
 
 async function delInvite(id) {
-  if (!confirm("Revoke this invite? The link will stop working.")) return;
-  await api(`/api/invites/${id}`, { method: "DELETE" });
-  loadInvites();
+  const inv = INVITES.find(i => i.id === id) || {};
+  const name = inv.candidate || "", completed = !!inv.completed, live = !!inv.live;
+  const what = completed ? "its report, transcript and video recording" : live ? "it will be ended for the candidate right now" : "the invite link will stop working";
+  if (!confirm(`Delete the interview${name ? " with " + name : ""}? This cannot be undone — ${what}.`)) return;
+  try { await api(`/api/invites/${id}`, { method: "DELETE" }); } catch { return; }
+  toast("Interview deleted", "ok");
+  closeModal();
+  await loadInvites();
+  if (SEL_VAC) loadResults();
 }
 
 async function stopInterview(token) {

@@ -99,6 +99,7 @@ class Analysis(SQLModel, table=True):
     summary: str = ""
     footprint_summary: str = ""
     status: str = "pending"  # pending | running | done | error
+    vac_hash: str = ""       # hash of vacancy text at scoring time (re-score only if vacancy changed)
     updated_at: str = Field(default_factory=now)
 
 
@@ -151,6 +152,7 @@ def init_db(seed=True):
             ("interviewreport", "video_path", "VARCHAR DEFAULT ''"),
             ("cv", "vacancy_id", "INTEGER"),
             ("cv", "file_path", "VARCHAR DEFAULT ''"),
+            ("analysis", "vac_hash", "VARCHAR DEFAULT ''"),
         ]:
             cols = [r[1] for r in conn.execute(text(f"PRAGMA table_info({table})"))]
             if col not in cols:
@@ -158,8 +160,13 @@ def init_db(seed=True):
     if not seed:
         return
     with Session(engine) as s:
+        admin_pw = os.environ.get("ADMIN_PASSWORD")
+        admin = s.exec(select(User).where(User.email == "admin")).first()
         if not s.exec(select(User).where(User.role == "ADMIN")).first():
-            s.add(User(name="Admin", email="admin", password_hash=hash_password("admin123"), role="ADMIN"))
+            s.add(User(name="Admin", email="admin", password_hash=hash_password(admin_pw or "admin123"), role="ADMIN"))
+        elif admin_pw and admin and not verify_password(admin_pw, admin.password_hash):
+            admin.password_hash = hash_password(admin_pw)  # keep admin password in sync with ADMIN_PASSWORD
+            s.add(admin)
         if not s.exec(select(Vacancy)).first():
             for v in [
                 Vacancy(title="Python Developer", category="Programmer",

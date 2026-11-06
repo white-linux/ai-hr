@@ -23,7 +23,20 @@ from models import (CATEGORIES, Analysis, CV, InterviewReport, Invite, User,
                     init_db, now, verify_password)
 
 app = FastAPI(title="AI Recruiter")
-SECRET = os.environ.get("HR_SECRET", "hr-demo-secret-2026")
+def _load_secret():
+    """Session-signing key: env HR_SECRET, else a random key persisted in .secret (never hardcoded)."""
+    if os.environ.get("HR_SECRET"):
+        return os.environ["HR_SECRET"]
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".secret")
+    if not os.path.exists(p):
+        with open(p, "w") as f:
+            f.write(secrets.token_hex(32))
+        os.chmod(p, 0o600)
+    return open(p).read().strip()
+
+
+SECRET = _load_secret()
+PUBLIC_URL = os.environ.get("PUBLIC_URL", "").rstrip("/")
 COOKIE = "session"
 RECORDINGS_DIR = os.path.join(os.path.dirname(__file__), "recordings")
 os.makedirs(RECORDINGS_DIR, exist_ok=True)
@@ -64,6 +77,12 @@ def require_admin(u=Depends(current_user)):
 
 
 def base_url(request: Request):
+    if PUBLIC_URL:
+        return PUBLIC_URL
+    proto = request.headers.get("x-forwarded-proto")
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    if proto and host:
+        return f"{proto}://{host}"
     return str(request.base_url).rstrip("/")
 
 
@@ -109,7 +128,7 @@ def parse_cv_text(text: str) -> dict:
     out = llm.chat_json([
         {"role": "system", "content": "You parse CVs. Return ONLY JSON."},
         {"role": "user", "content": f"Parse this CV.\nReturn JSON: {{\"category\": one of {CATEGORIES}, \"name\": \"\", \"email\": \"\", \"skills\": [\"...\"], \"years_experience\": number, \"links\": [{{\"type\": \"linkedin|github|portfolio\", \"url\": \"\"}}]}}\n\nCV:\n{text[:6000]}"},
-    ])
+    ], model=llm.FAST_MODEL)
     if out.get("category") not in CATEGORIES:
         out["category"] = "Other"
     skills = out.get("skills", [])
@@ -179,6 +198,14 @@ def login(body: LoginBody):
         resp = JSONResponse({"id": u.id, "name": u.name, "email": u.email, "role": u.role})
         resp.set_cookie(COOKIE, make_token(u), httponly=True, samesite="lax")
         return resp
+
+
+@app.get("/api/auth/config")
+def auth_config():
+    """Show the demo-credentials hint only while the default admin password is still in use."""
+    with contextlib.closing(Session(engine)) as s:
+        a = s.exec(select(User).where(User.email == "admin")).first()
+        return {"demo_hint": bool(a and verify_password("admin123", a.password_hash))}
 
 
 @app.post("/api/auth/register")
@@ -346,13 +373,22 @@ def analyze(body: dict, u: User = Depends(require_admin)):
         vac = s.get(Vacancy, vid)
         if not vac:
             raise HTTPException(404, "Vacancy not found")
+        force = bool(body.get("force"))
         cv_ids = body.get("cv_ids")
         if not cv_ids:
             cv_ids = [c.id for c in s.exec(select(CV).where(CV.category == vac.category)).all()]
         if not cv_ids:
             raise HTTPException(400, f"No CVs in category '{vac.category}'")
-    run_id = analysis.start_run(vid, cv_ids, force=bool(body.get("force")))
-    return {"run_id": run_id, "cv_count": len(cv_ids)}
+        total = len(cv_ids)
+        if not force:  # skip CVs already scored against the current vacancy text
+            h = analysis.vacancy_hash(vac)
+            fresh = {a.cv_id for a in s.exec(select(Analysis).where(Analysis.vacancy_id == vid, Analysis.status == "done")).all()
+                     if a.vac_hash == h}
+            cv_ids = [c for c in cv_ids if c not in fresh]
+        if not cv_ids:
+            return {"run_id": None, "cv_count": 0, "up_to_date": total}
+    run_id = analysis.start_run(vid, cv_ids, force=force)
+    return {"run_id": run_id, "cv_count": len(cv_ids), "up_to_date": total - len(cv_ids)}
 
 
 @app.get("/api/analyze/progress/{run_id}")
@@ -420,10 +456,18 @@ def create_invite(body: dict, request: Request, u: User = Depends(require_admin)
 def del_invite(iid: int, u: User = Depends(require_admin)):
     with contextlib.closing(Session(engine)) as s:
         inv = s.get(Invite, iid)
-        if inv:
-            for r in s.exec(select(InterviewReport).where(InterviewReport.invite_id == iid)).all():
-                s.delete(r)
-            s.delete(inv); s.commit()
+        if not inv:
+            raise HTTPException(404, "Interview not found")
+        # remove report, its video and the live camera frame together with the invite
+        for r in s.exec(select(InterviewReport).where(InterviewReport.invite_id == iid)).all():
+            if r.video_path:
+                with contextlib.suppress(OSError):
+                    os.remove(os.path.join(RECORDINGS_DIR, os.path.basename(r.video_path)))
+            s.delete(r)
+        with contextlib.suppress(OSError):
+            os.remove(os.path.join(RECORDINGS_DIR, f"frames_{iid}.jpg"))
+        s.delete(inv); s.commit()
+    print(f"[interview] admin deleted invite {iid}")
     return {"ok": True}
 
 
@@ -566,7 +610,7 @@ def _finalize(s, inv, rep, vac, cv, note=""):
         rep.weaknesses = json.dumps([str(x) for x in final.get("weaknesses", [])][:6])
         rep.areas = json.dumps([str(x) for x in final.get("areas", [])][:8])
     else:
-        rep.decision = "CONSIDER"
+        rep.decision = ""  # no answers -> no hiring decision (shown as "Stopped")
         rep.justification = f"Interview ended before any answers were given ({note or 'no transcript'})."
         rep.strengths = "[]"; rep.weaknesses = "[]"; rep.areas = "[]"
     inv.completed = True
@@ -829,11 +873,15 @@ def _exec_action(action, params, s, request, u, ctx):
         cv_ids = [c.id for c in s.exec(select(CV).where(CV.category == vac.category)).all()]
         if not cv_ids:
             return f"No CVs in category '{vac.category}'."
+        h = analysis.vacancy_hash(vac)
+        fresh = {a.cv_id for a in s.exec(select(Analysis).where(Analysis.vacancy_id == vac.id, Analysis.status == "done")).all() if a.vac_hash == h}
+        todo = [c for c in cv_ids if c not in fresh]
         on_done = _invite_best_after(vac.id, u.id, base_url(request)) if ctx.get("then_invite") == vac.id else None
-        run_id = analysis.start_run(vac.id, cv_ids, on_done=on_done)
+        run_id = analysis.start_run(vac.id, todo, on_done=on_done)
         ctx["pending_run"] = vac.id
         extra = " The best candidate will be invited automatically when it finishes." if on_done else ""
-        return {"text": f"Started analysis for '{vac.title}' on {len(cv_ids)} CV(s).{extra}", "run_id": run_id, "vacancy_id": vac.id}
+        cached = f" ({len(cv_ids) - len(todo)} already up to date)" if len(todo) < len(cv_ids) else ""
+        return {"text": f"Started analysis for '{vac.title}' on {len(todo)} CV(s){cached}.{extra}", "run_id": run_id, "vacancy_id": vac.id}
 
     if action == "invite_best":
         vac = _find_vacancy(s, params, ctx.get("selected_vacancy_id"))
