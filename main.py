@@ -25,6 +25,8 @@ from models import (CATEGORIES, Analysis, CV, InterviewReport, Invite, User,
 app = FastAPI(title="AI Recruiter")
 SECRET = "hr-demo-secret-2026"
 COOKIE = "session"
+RECORDINGS_DIR = os.path.join(os.path.dirname(__file__), "recordings")
+os.makedirs(RECORDINGS_DIR, exist_ok=True)
 
 # ---------------- helpers ----------------
 def make_token(user: User):
@@ -429,9 +431,9 @@ def interview_start(token: str):
             s.add(rep)
             s.commit()
         intro = llm.chat([
-            {"role": "system", "content": "You are a friendly AI interviewer. Introduce the interview in 3-4 short sentences: welcome the candidate, name the company as 'our company', name the role, explain the format (5-6 questions, answered by voice)."},
+            {"role": "system", "content": "You are Nova, a warm and lively AI interviewer with a bit of personality (like a friendly robot colleague). Introduce yourself by name in 3-5 short conversational sentences: welcome the candidate, mention the role, explain the format (5-6 questions answered by voice), reassure them and wish luck. Sound human and encouraging, not corporate."},
             {"role": "user", "content": f"Candidate {cv.candidate_name} is interviewing for {vac.title}."},
-        ], temperature=0.6)
+        ], temperature=0.7)
         return {"intro": intro, "question": questions[0], "total": len(questions)}
 
 
@@ -459,8 +461,8 @@ def interview_answer(token: str, body: dict):
         entry = {"q": q_text, "a": answer, "followup_of": qi if is_followup else None}
 
         out = llm.chat_json([
-            {"role": "system", "content": "You are an AI interviewer scoring a candidate's voice answer. Be fair: concise correct answers deserve 6-8; wrong/vague answers 2-4; excellent 9-10."},
-            {"role": "user", "content": f"Role: {vac.title}. Question: {q_text}\nCandidate answer: {answer}\n\nReturn JSON: {{\"score\": 0-10, \"feedback\": \"1-2 sentences\", \"followup\": null or \"one short probing question if the answer is vague or shallow, else null\"}}"},
+            {"role": "system", "content": "You are Nova, a warm AI interviewer. React like a real human interviewer would in conversation: acknowledge something specific from the answer in 1-2 natural sentences (e.g. 'Oh, nice, the semaphore trick — that's exactly how you keep the pool from melting down.'). Score fairly: concise correct answers 6-8, wrong/vague 2-4, excellent 9-10."},
+            {"role": "user", "content": f"Role: {vac.title}. Question: {q_text}\nCandidate answer: {answer}\n\nReturn JSON: {{\"score\": 0-10, \"feedback\": \"1-2 conversational sentences reacting to what was said\", \"followup\": null or \"one short probing question if the answer is vague, else null\"}}"},
         ])
         try:
             score = max(0, min(10, float(out.get("score", 5))))
@@ -518,6 +520,25 @@ def interview_answer(token: str, body: dict):
         return resp
 
 
+@app.post("/api/interview/{token}/video")
+async def interview_video(token: str, video: UploadFile = File(...)):
+    """Save the recorded interview video and link it to the report."""
+    iid, cv_id, vid, _ = _interview_invite(token)
+    data = await video.read()
+    if not data:
+        raise HTTPException(400, "Empty video")
+    fn = f"interview_{iid}_{secrets.token_hex(4)}.webm"
+    with open(os.path.join(RECORDINGS_DIR, fn), "wb") as f:
+        f.write(data)
+    with contextlib.closing(Session(engine)) as s:
+        rep = s.exec(select(InterviewReport).where(InterviewReport.invite_id == iid)).first()
+        if rep:
+            rep.video_path = fn
+            s.add(rep); s.commit()
+    print(f"[video] saved {fn} ({len(data) // 1024} KB) for invite {iid}")
+    return {"ok": True, "video": f"/recordings/{fn}"}
+
+
 # ---------------- reports (admin) ----------------
 @app.get("/api/reports")
 def reports(u: User = Depends(require_admin)):
@@ -531,6 +552,7 @@ def reports(u: User = Depends(require_admin)):
                 "total_score": r.total_score, "decision": r.decision,
                 "justification": r.justification, "strengths": json.loads(r.strengths),
                 "weaknesses": json.loads(r.weaknesses), "areas": json.loads(r.areas),
+                "video": f"/recordings/{r.video_path}" if r.video_path else None,
                 "transcript": r.transcript_list(),
             })
         return out
@@ -647,6 +669,9 @@ def chat(body: dict, request: Request, u: User = Depends(require_admin)):
 
 
 # ---------------- static ----------------
+app.mount("/recordings", StaticFiles(directory=RECORDINGS_DIR), name="recordings")
+
+
 @app.get("/interview/{token}")
 def interview_page(token: str):
     return FileResponse(os.path.join("static", "interview.html"))

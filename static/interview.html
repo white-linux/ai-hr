@@ -3,43 +3,115 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Interview</title>
+<title>AI Interview — Nova</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script>tailwind.config = { darkMode: 'class' }</script>
-<style>body{background:#0b1020}::-webkit-scrollbar{width:8px}::-webkit-scrollbar-thumb{background:#2a3655;border-radius:4px}
-.spin{animation:sp 1s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}</style>
+<style>
+body{background:#0b1020}
+::-webkit-scrollbar{width:8px}::-webkit-scrollbar-thumb{background:#2a3655;border-radius:4px}
+.spin{animation:sp 1s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}
+
+/* ---- Nova the robot avatar ---- */
+.avatar{width:150px;height:150px;position:relative;margin:0 auto}
+.avatar .ring{position:absolute;inset:-10px;border-radius:9999px;border:2px solid transparent;transition:all .4s}
+.avatar.state-listening .ring{border-color:#6366f1;animation:pulse 1.4s ease-out infinite}
+.avatar.state-speaking .ring{border-color:#10b981;animation:pulse 1.8s ease-out infinite}
+@keyframes pulse{0%{transform:scale(.96);opacity:.9}70%{transform:scale(1.12);opacity:0}100%{opacity:0}}
+.head{width:150px;height:150px;border-radius:38%;background:linear-gradient(160deg,#1e293b,#0f172a);
+  border:2px solid #334155;position:relative;box-shadow:0 0 40px rgba(99,102,241,.15), inset 0 0 30px rgba(0,0,0,.5);
+  transition:box-shadow .5s, transform .15s}
+.avatar.state-speaking .head{box-shadow:0 0 55px rgba(16,185,129,.35), inset 0 0 30px rgba(0,0,0,.5)}
+.avatar.state-listening .head{box-shadow:0 0 55px rgba(99,102,241,.35), inset 0 0 30px rgba(0,0,0,.5)}
+.avatar.state-speaking .head{animation:bob 2.4s ease-in-out infinite}
+@keyframes bob{0%,100%{transform:translateY(0) rotate(0deg)}25%{transform:translateY(-4px) rotate(-1.2deg)}75%{transform:translateY(-2px) rotate(1.2deg)}}
+.eyes{position:absolute;top:42px;left:0;right:0;display:flex;justify-content:center;gap:34px}
+.eye{width:16px;height:20px;border-radius:8px;background:#67e8f9;box-shadow:0 0 12px #22d3ee;
+  animation:blink 4.2s infinite;transition:all .3s}
+.avatar.state-speaking .eye{height:14px}
+@keyframes blink{0%,91%,100%{transform:scaleY(1)}94%,97%{transform:scaleY(.08)}}
+.mouth{position:absolute;bottom:34px;left:0;right:0;display:flex;justify-content:center;align-items:flex-end;gap:4px;height:26px}
+.mouth span{width:5px;border-radius:3px;background:#38bdf8;box-shadow:0 0 8px #0ea5e9;height:6px;transition:height .15s}
+.avatar.state-speaking .mouth span{animation:eq .7s ease-in-out infinite}
+.avatar.state-speaking .mouth span:nth-child(2){animation-delay:.12s}
+.avatar.state-speaking .mouth span:nth-child(3){animation-delay:.24s}
+.avatar.state-speaking .mouth span:nth-child(4){animation-delay:.36s}
+.avatar.state-speaking .mouth span:nth-child(5){animation-delay:.48s}
+@keyframes eq{0%,100%{height:6px}50%{height:22px}}
+.antenna{position:absolute;top:-18px;left:50%;transform:translateX(-50%);width:3px;height:16px;background:#334155}
+.antenna::after{content:'';position:absolute;top:-8px;left:50%;transform:translateX(-50%);width:9px;height:9px;border-radius:50%;
+  background:#f472b6;box-shadow:0 0 10px #f472b6;animation:blinkdot 2.8s infinite}
+@keyframes blinkdot{0%,100%{opacity:1}50%{opacity:.3}}
+.avatar .state-label{position:absolute;bottom:-30px;left:0;right:0;text-align:center;font-size:11px;letter-spacing:.1em;text-transform:uppercase}
+.state-idle .state-label{color:#64748b}.state-listening .state-label{color:#818cf8}.state-speaking .state-label{color:#34d399}
+
+/* recording badge */
+.rec-badge{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:#f87171;border:1px solid #7f1d1d;
+  background:#450a0a;border-radius:9999px;padding:3px 10px}
+.rec-dot{width:8px;height:8px;border-radius:50%;background:#ef4444;animation:recblink 1.2s infinite}
+@keyframes recblink{0%,100%{opacity:1}50%{opacity:.25}}
+</style>
 </head>
 <body class="text-slate-200 min-h-screen">
 <div id="toasts" class="fixed top-4 right-4 z-50 space-y-2 w-80"></div>
 <div class="max-w-3xl mx-auto p-6">
   <header class="flex items-center justify-between mb-6">
     <h1 class="text-2xl font-bold">🎙 AI Interview</h1>
-    <span id="hdr-info" class="text-sm text-slate-400"></span>
+    <div class="flex items-center gap-3">
+      <span id="rec-badge" class="rec-badge hidden"><span class="rec-dot"></span> REC</span>
+      <span id="hdr-info" class="text-sm text-slate-400"></span>
+    </div>
   </header>
 
   <div id="loading" class="text-center py-16 text-slate-400"><span class="spin inline-block text-2xl">⚙</span><br>Loading interview…</div>
 
   <div id="setup" class="hidden bg-slate-900/60 border border-slate-800 rounded-2xl p-6 space-y-4">
-    <h2 id="vac-title" class="text-xl font-semibold"></h2>
-    <p class="text-slate-400 text-sm">This is an <b>AI voice interview</b>: the interviewer speaks questions aloud and listens to your spoken answers.
-      <b class="text-amber-400">Please use Chrome or Chromium</b> — voice input uses the Web Speech API. A text input is always available as a fallback.</p>
-    <div class="flex gap-4 items-start">
+    <div class="avatar state-idle" id="avatar">
+      <div class="ring"></div>
+      <div class="head">
+        <div class="antenna"></div>
+        <div class="eyes"><div class="eye"></div><div class="eye"></div></div>
+        <div class="mouth"><span></span><span></span><span></span><span></span><span></span></div>
+      </div>
+      <div class="state-label">Nova · AI interviewer</div>
+    </div>
+    <h2 id="vac-title" class="text-xl font-semibold text-center"></h2>
+    <p class="text-slate-400 text-sm text-center max-w-xl mx-auto">Hi! I'm <b class="text-indigo-300">Nova</b> 👋 — I'll be running your interview today. I speak my questions out loud and listen to your voice answers.
+      <b class="text-amber-400">Please use Chrome or Chromium</b> for voice. Typing your answers works too — and the whole interview is <b>video recorded</b> for the recruiter.</p>
+    <div class="flex gap-4 items-start justify-center">
       <video id="preview" autoplay muted playsinline class="w-56 rounded-xl bg-black border border-slate-700"></video>
-      <div class="flex-1 space-y-2 text-sm">
+      <div class="space-y-2 text-sm">
         <div id="cam-status" class="text-slate-400">Camera & microphone not requested yet.</div>
         <button id="perm-btn" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 font-medium">Enable camera & microphone</button>
         <button id="start-btn" class="hidden px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 font-medium">▶ Start interview</button>
-        <label class="flex items-center gap-2 text-xs text-slate-400"><input id="tts-on" type="checkbox" checked> Speak questions aloud (text-to-speech)</label>
+        <label class="flex items-center gap-2 text-xs text-slate-400"><input id="tts-on" type="checkbox" checked> Nova speaks aloud (text-to-speech)</label>
       </div>
     </div>
   </div>
 
   <div id="interview" class="hidden space-y-4">
     <div class="bg-slate-900/60 border border-slate-800 rounded-2xl p-5">
-      <div class="flex items-center justify-between text-xs text-slate-500 mb-2"><span>AI INTERVIEWER</span><span id="q-progress"></span></div>
-      <div id="intro-text" class="text-sm text-slate-300 italic mb-3"></div>
-      <div id="question-text" class="text-lg font-medium leading-relaxed"></div>
-      <div id="listening" class="hidden mt-2 text-sm text-indigo-300"><span class="animate-pulse">●</span> listening…</div>
+      <div class="flex items-center justify-between text-xs text-slate-500 mb-3"><span>NOVA · AI INTERVIEWER</span><span id="q-progress"></span></div>
+      <div class="flex gap-5 items-start">
+        <div class="avatar shrink-0 scale-[.62] -my-6" id="avatar2">
+          <div class="ring"></div>
+          <div class="head">
+            <div class="antenna"></div>
+            <div class="eyes"><div class="eye"></div><div class="eye"></div></div>
+            <div class="mouth"><span></span><span></span><span></span><span></span><span></span></div>
+          </div>
+          <div class="state-label">idle</div>
+        </div>
+        <div class="flex-1">
+          <div id="intro-text" class="text-sm text-slate-300 italic mb-3"></div>
+          <div id="question-text" class="text-lg font-medium leading-relaxed"></div>
+          <div id="listening" class="hidden mt-2 text-sm text-indigo-300"><span class="animate-pulse">●</span> listening…</div>
+          <div class="flex gap-2 mt-3 flex-wrap">
+            <button onclick="ttsRepeat()" title="Repeat question" class="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700">🔁 Repeat</button>
+            <button id="tts-pause" onclick="ttsPause()" title="Pause reading" class="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700">⏸ Pause</button>
+            <button onclick="ttsStop()" title="Stop reading" class="text-xs px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700">⏹ Stop</button>
+          </div>
+        </div>
+      </div>
     </div>
     <div id="feedback-box" class="hidden bg-slate-900/60 border border-slate-800 rounded-2xl p-4 text-sm">
       <span class="font-semibold" id="fb-score"></span>

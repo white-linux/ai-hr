@@ -125,6 +125,7 @@ class InterviewReport(SQLModel, table=True):
     strengths: str = "[]"
     weaknesses: str = "[]"
     areas: str = "[]"
+    video_path: str = ""       # filename of recorded interview video (recordings/)
     created_at: str = Field(default_factory=now)
 
     def transcript_list(self):
@@ -141,6 +142,12 @@ def get_session():
 
 def init_db(seed=True):
     SQLModel.metadata.create_all(engine)
+    # tiny migration for DBs created before the video_path column existed
+    with engine.begin() as conn:
+        from sqlalchemy import text
+        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(interviewreport)"))]
+        if "video_path" not in cols:
+            conn.execute(text("ALTER TABLE interviewreport ADD COLUMN video_path VARCHAR DEFAULT ''"))
     if not seed:
         return
     with Session(engine) as s:

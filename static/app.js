@@ -281,19 +281,45 @@ async function loadResults() {
 }
 
 /* ---------- invites & reports ---------- */
+let REPORTS = {};
+let INVITE_FILTER = "all";
+
+const STATUS_META = {
+  pending:    { label: "⏳ Pending",   cls: "bg-slate-700 text-slate-300" },
+  inprogress: { label: "🎙 In progress", cls: "bg-indigo-900 text-indigo-300" },
+  HIRE:       { label: "✅ HIRE",     cls: "bg-emerald-900 text-emerald-400" },
+  CONSIDER:   { label: "⚠ CONSIDER", cls: "bg-amber-900 text-amber-400" },
+  REJECT:     { label: "❌ REJECT",   cls: "bg-red-900 text-red-400" },
+};
+
+function inviteStatus(inv) {
+  if (inv.completed) return inv.decision || "CONSIDER";
+  return inv.report_id ? "inprogress" : "pending";
+}
+
 async function loadInvites() {
   const invites = await api("/api/invites");
   const reports = await api("/api/reports");
   REPORTS = {};
   reports.forEach(r => REPORTS[r.id] = r);
+  // status chips with counts
+  const counts = { all: invites.length, pending: 0, inprogress: 0, HIRE: 0, CONSIDER: 0, REJECT: 0 };
+  invites.forEach(i => counts[inviteStatus(i)]++);
+  document.getElementById("invite-stats").innerHTML = Object.entries(counts).map(([k, n]) => {
+    const meta = k === "all" ? { label: `All (${n})`, cls: "bg-slate-800 text-slate-200" } : STATUS_META[k];
+    const active = INVITE_FILTER === k ? "ring-2 ring-indigo-400" : "opacity-70";
+    return `<button onclick="INVITE_FILTER='${k}';loadInvites()" class="px-2 py-1 rounded-lg ${meta.cls} ${active}">${meta.label}${k !== "all" ? ` · ${n}` : ""}</button>`;
+  }).join("");
+  const shown = invites.filter(i => INVITE_FILTER === "all" || inviteStatus(i) === INVITE_FILTER);
   const box = document.getElementById("invite-list");
   let html = "";
-  for (const inv of invites) {
+  for (const inv of shown) {
+    const st = STATUS_META[inviteStatus(inv)];
     const rep = reports.find(r => r.id === inv.report_id);
     html += `<div class="bg-slate-800/50 rounded-lg p-2.5">
       <div class="flex items-center justify-between gap-2">
         <span class="font-medium truncate">${esc(inv.candidate)}</span>
-        ${inv.completed ? `<span class="text-xs px-1.5 py-0.5 rounded ${inv.decision === "HIRE" ? "bg-emerald-900 text-emerald-400" : inv.decision === "REJECT" ? "bg-red-900 text-red-400" : "bg-amber-900 text-amber-400"}">${inv.decision || "done"} · ${inv.score ?? "?"}/10</span>` : '<span class="text-xs text-slate-500">pending</span>'}
+        <span class="text-xs px-1.5 py-0.5 rounded shrink-0 ${st.cls}">${st.label}${inv.completed ? " · " + (inv.score ?? "?") + "/10" : ""}</span>
       </div>
       <div class="flex items-center gap-2 mt-1">
         <input readonly value="${inv.link}" class="flex-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-[10px] text-slate-400">
@@ -302,10 +328,8 @@ async function loadInvites() {
       ${rep ? `<button onclick="showReport(${rep.id})" class="mt-1 text-xs text-indigo-400 underline">View report & transcript</button>` : ""}
     </div>`;
   }
-  box.innerHTML = html || '<p class="text-slate-500">No invites yet. Invite a candidate from the CV list or results.</p>';
+  box.innerHTML = html || '<p class="text-slate-500">No interviews in this status yet.</p>';
 }
-
-let REPORTS = {};
 
 function showReport(id) {
   const r = REPORTS[id];
@@ -316,6 +340,7 @@ function showReport(id) {
     <p class="text-sm text-slate-300 mb-2">${esc(r.justification)}</p>
     <div class="text-xs text-slate-400 mb-2"><b>Strengths:</b> ${(r.strengths || []).map(esc).join("; ")}<br><b>Weaknesses:</b> ${(r.weaknesses || []).map(esc).join("; ")}</div>
     <div class="text-xs text-slate-400 mb-2"><b>Areas:</b> ${(r.areas || []).map(esc).join(", ")}</div>
+    ${r.video ? `<div class="mb-3"><b class="text-xs">🎥 Video recording:</b><video src="${r.video}" controls class="w-full mt-1 rounded-lg border border-slate-700 max-h-64"></video></div>` : ""}
     <div class="max-h-64 overflow-y-auto space-y-2 mt-3 border-t border-slate-700 pt-3">
       ${(r.transcript || []).map(t => `<div class="text-sm bg-slate-800/60 rounded-lg p-2">
         <div class="text-slate-300"><b>Q:</b> ${esc(t.q)}</div>
