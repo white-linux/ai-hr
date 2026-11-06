@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+hr.db
+API.txt
+PASSWD.txt
+*.log

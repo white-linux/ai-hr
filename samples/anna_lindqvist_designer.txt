@@ -1,0 +1,21 @@
+Anna Lindqvist
+Email: hello@annalindqvist.design
+Portfolio: https://annalindqvist.design
+Dribbble: https://dribbble.com/annalindqvist
+
+UI/UX DESIGNER, 6 years experience
+
+EXPERIENCE
+Product Designer, Klarheit App (fintech), 2022-2025
+- Redesigned onboarding flow, completion rate went 54% -> 81%
+- Built and maintained the design system in Figma (120+ components, tokens synced to code)
+- Ran 12 moderated usability tests per year; findings went straight into sprint backlogs
+
+UI Designer, Studio Norr, 2019-2022
+- Designed marketing sites and mobile apps for 15+ clients
+- Handoff in Figma with redlines; worked daily with frontend devs
+
+SKILLS
+Figma, design systems, prototyping (Figma + Protopie), accessibility (WCAG AA), UX research, basic HTML/CSS so I can argue with developers properly
+
+I care about clarity over decoration. My portfolio shows case studies with the ugly first drafts included.

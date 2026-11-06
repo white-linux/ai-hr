@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Interview</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config = { darkMode: 'class' }</script>
+<style>body{background:#0b1020}::-webkit-scrollbar{width:8px}::-webkit-scrollbar-thumb{background:#2a3655;border-radius:4px}
+.spin{animation:sp 1s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}</style>
+</head>
+<body class="text-slate-200 min-h-screen">
+<div id="toasts" class="fixed top-4 right-4 z-50 space-y-2 w-80"></div>
+<div class="max-w-3xl mx-auto p-6">
+  <header class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-bold">🎙 AI Interview</h1>
+    <span id="hdr-info" class="text-sm text-slate-400"></span>
+  </header>
+
+  <div id="loading" class="text-center py-16 text-slate-400"><span class="spin inline-block text-2xl">⚙</span><br>Loading interview…</div>
+
+  <div id="setup" class="hidden bg-slate-900/60 border border-slate-800 rounded-2xl p-6 space-y-4">
+    <h2 id="vac-title" class="text-xl font-semibold"></h2>
+    <p class="text-slate-400 text-sm">This is an <b>AI voice interview</b>: the interviewer speaks questions aloud and listens to your spoken answers.
+      <b class="text-amber-400">Please use Chrome or Chromium</b> — voice input uses the Web Speech API. A text input is always available as a fallback.</p>
+    <div class="flex gap-4 items-start">
+      <video id="preview" autoplay muted playsinline class="w-56 rounded-xl bg-black border border-slate-700"></video>
+      <div class="flex-1 space-y-2 text-sm">
+        <div id="cam-status" class="text-slate-400">Camera & microphone not requested yet.</div>
+        <button id="perm-btn" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 font-medium">Enable camera & microphone</button>
+        <button id="start-btn" class="hidden px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 font-medium">▶ Start interview</button>
+        <label class="flex items-center gap-2 text-xs text-slate-400"><input id="tts-on" type="checkbox" checked> Speak questions aloud (text-to-speech)</label>
+      </div>
+    </div>
+  </div>
+
+  <div id="interview" class="hidden space-y-4">
+    <div class="bg-slate-900/60 border border-slate-800 rounded-2xl p-5">
+      <div class="flex items-center justify-between text-xs text-slate-500 mb-2"><span>AI INTERVIEWER</span><span id="q-progress"></span></div>
+      <div id="intro-text" class="text-sm text-slate-300 italic mb-3"></div>
+      <div id="question-text" class="text-lg font-medium leading-relaxed"></div>
+      <div id="listening" class="hidden mt-2 text-sm text-indigo-300"><span class="animate-pulse">●</span> listening…</div>
+    </div>
+    <div id="feedback-box" class="hidden bg-slate-900/60 border border-slate-800 rounded-2xl p-4 text-sm">
+      <span class="font-semibold" id="fb-score"></span>
+      <span id="fb-text" class="text-slate-300"></span>
+    </div>
+    <div class="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
+      <div class="flex gap-2">
+        <button id="mic-btn" class="px-4 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 font-medium whitespace-nowrap">🎤 Answer by voice</button>
+        <input id="answer-input" class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-500" placeholder="…or type your answer here">
+        <button id="send-btn" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-sm font-medium">Send</button>
+      </div>
+      <div id="mic-hint" class="text-xs text-slate-500 mt-2"></div>
+    </div>
+    <div id="transcript" class="space-y-2"></div>
+  </div>
+
+  <div id="final" class="hidden bg-slate-900/60 border border-slate-800 rounded-2xl p-6"></div>
+</div>
+<script src="/interview.js"></script>
+</body>
+</html>

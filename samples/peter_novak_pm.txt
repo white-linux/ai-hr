@@ -1,0 +1,21 @@
+Peter Novak
+Email: peter.novak.pm@gmail.com
+LinkedIn: https://www.linkedin.com/in/peter-novak-pm
+
+PROJECT MANAGEMENT EXPERIENCE
+Delivery Manager, Softline Studio, 2021-2025
+- Ran 3 parallel web/mobile projects, teams of 5-9 people
+- Introduced 2-week sprint cadence and a simple risk register; deadline slips dropped from ~40% to ~15% of sprints
+- Handled client communication for 4 retainers, total contract value ~EUR 1.2M
+- Organized releases, coordinated QA and DevOps, wrote the status reports nobody read but everyone needed
+
+Scrum Master (part-time role), Softline Studio, 2020-2021
+- Facilitated ceremonies for two teams, removed blockers, coached a junior PO
+
+CERTIFICATIONS
+PSM I (Scrum.org), 2021
+
+TOOLS
+Jira, Confluence, Notion, basic SQL for pulling my own metrics
+
+I am pragmatic about agile: ceremonies exist to serve delivery, not the other way around. I have not managed budgets over EUR 2M and have limited exposure to hardware projects.

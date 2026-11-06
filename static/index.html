@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Recruiter — Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config = { darkMode: 'class' }</script>
+<style>
+  body { background:#0b1020; }
+  ::-webkit-scrollbar{width:8px;height:8px} ::-webkit-scrollbar-thumb{background:#2a3655;border-radius:4px}
+  .spin{animation:sp 1s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body class="text-slate-200 min-h-screen">
+<div id="toasts" class="fixed top-4 right-4 z-50 space-y-2 w-80"></div>
+
+<!-- AUTH -->
+<div id="auth-view" class="min-h-screen flex items-center justify-center">
+  <div class="w-full max-w-sm bg-slate-900/70 border border-slate-800 rounded-2xl p-8 shadow-xl">
+    <h1 class="text-2xl font-bold text-center mb-1">🤖 AI Recruiter</h1>
+    <p class="text-center text-slate-400 text-sm mb-6">CV screening · analysis · AI interviews</p>
+    <div class="flex gap-2 mb-6">
+      <button id="tab-login" class="flex-1 py-2 rounded-lg text-sm font-medium bg-indigo-600">Sign in</button>
+      <button id="tab-reg" class="flex-1 py-2 rounded-lg text-sm font-medium bg-slate-800 text-slate-400">Register</button>
+    </div>
+    <div id="reg-name" class="hidden mb-3">
+      <label class="text-xs text-slate-400">Name</label>
+      <input id="f-name" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-500" placeholder="Jane Doe">
+    </div>
+    <div class="mb-3">
+      <label class="text-xs text-slate-400">Email</label>
+      <input id="f-email" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-500" placeholder="admin">
+    </div>
+    <div class="mb-5">
+      <label class="text-xs text-slate-400">Password</label>
+      <input id="f-pass" type="password" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-500" placeholder="••••••">
+    </div>
+    <button id="auth-btn" class="w-full py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 font-medium">Sign in</button>
+    <p class="text-xs text-slate-500 mt-4 text-center">Admin demo: admin / admin123</p>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="app-view" class="hidden">
+  <header class="flex items-center justify-between px-6 py-3 border-b border-slate-800 bg-slate-900/60 sticky top-0 z-40 backdrop-blur">
+    <h1 class="font-bold">🤖 AI Recruiter</h1>
+    <div class="flex items-center gap-3">
+      <span id="user-label" class="text-sm text-slate-400"></span>
+      <button onclick="api('/api/auth/logout',{method:'POST'}).then(()=>location.reload())" class="text-sm px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700">Logout</button>
+    </div>
+  </header>
+
+  <!-- ADMIN DASHBOARD -->
+  <div id="admin-view" class="grid grid-cols-12 gap-4 p-4 max-w-[1700px] mx-auto">
+    <!-- LEFT: CVs -->
+    <section class="col-span-12 lg:col-span-3 bg-slate-900/50 border border-slate-800 rounded-2xl p-4 flex flex-col max-h-[calc(100vh-90px)]">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="font-semibold">📄 CV Library</h2>
+        <label class="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 cursor-pointer">
+          + Upload
+          <input id="cv-upload" type="file" multiple accept=".pdf,.docx,.txt" class="hidden">
+        </label>
+      </div>
+      <div id="upload-status" class="text-xs text-slate-400 mb-2"></div>
+      <div id="cv-list" class="overflow-y-auto space-y-4 pr-1 flex-1"><p class="text-slate-500 text-sm">Loading…</p></div>
+    </section>
+
+    <!-- CENTER: chat + results -->
+    <section class="col-span-12 lg:col-span-6 flex flex-col gap-4 max-h-[calc(100vh-90px)]">
+      <div class="bg-slate-900/50 border border-slate-800 rounded-2xl p-4 flex flex-col h-[46%]">
+        <h2 class="font-semibold mb-2">💬 AI Assistant <span class="text-xs text-slate-500 font-normal">— actions only on explicit commands</span></h2>
+        <div id="chat-log" class="flex-1 overflow-y-auto space-y-3 pr-1 text-sm"></div>
+        <div class="flex gap-2 mt-3">
+          <input id="chat-input" class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-500" placeholder="Ask anything, or: 'start analysis for Python Developer and invite the best candidate'" onkeydown="if(event.key==='Enter')sendChat()">
+          <button id="chat-send" onclick="sendChat()" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-sm font-medium">Send</button>
+        </div>
+      </div>
+      <div class="bg-slate-900/50 border border-slate-800 rounded-2xl p-4 flex-1 flex flex-col overflow-hidden">
+        <div class="flex items-center justify-between mb-2">
+          <h2 class="font-semibold">📊 Results <span id="results-vac" class="text-indigo-400 text-sm"></span></h2>
+          <button id="run-btn" onclick="runAnalysis()" class="text-sm px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 font-medium">▶ Run analysis</button>
+        </div>
+        <div id="stats-bar" class="flex gap-3 text-xs mb-2"></div>
+        <div id="results-list" class="overflow-y-auto space-y-2 pr-1 flex-1"><p class="text-slate-500 text-sm">Select a vacancy to see ranked candidates.</p></div>
+      </div>
+    </section>
+
+    <!-- RIGHT: vacancies + invites/reports -->
+    <section class="col-span-12 lg:col-span-3 flex flex-col gap-4 max-h-[calc(100vh-90px)]">
+      <div class="bg-slate-900/50 border border-slate-800 rounded-2xl p-4">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="font-semibold">💼 Vacancies</h2>
+          <button onclick="editVacancy(null)" class="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500">+ New</button>
+        </div>
+        <div id="vac-list" class="space-y-2 max-h-72 overflow-y-auto pr-1"><p class="text-slate-500 text-sm">Loading…</p></div>
+      </div>
+      <div class="bg-slate-900/50 border border-slate-800 rounded-2xl p-4 flex-1 overflow-hidden flex flex-col">
+        <h2 class="font-semibold mb-2">🎙 Invites & Interview Reports</h2>
+        <div id="invite-list" class="overflow-y-auto space-y-2 pr-1 text-sm"><p class="text-slate-500">Loading…</p></div>
+      </div>
+    </section>
+  </div>
+
+  <!-- CANDIDATE VIEW -->
+  <div id="cand-view" class="hidden max-w-2xl mx-auto p-6 space-y-4">
+    <div class="bg-slate-900/50 border border-slate-800 rounded-2xl p-6">
+      <h2 class="font-semibold text-lg mb-1">Apply to a vacancy</h2>
+      <p class="text-slate-400 text-sm mb-4">Upload your CV (PDF, DOCX or TXT). The AI will parse and screen it.</p>
+      <div class="flex flex-col gap-3">
+        <select id="apply-vac" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm"></select>
+        <input id="apply-file" type="file" accept=".pdf,.docx,.txt" class="text-sm">
+        <button onclick="applyJob()" class="py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 font-medium">Submit application</button>
+        <div id="apply-status" class="text-sm"></div>
+      </div>
+    </div>
+    <div class="bg-slate-900/50 border border-slate-800 rounded-2xl p-6">
+      <h2 class="font-semibold text-lg mb-3">My interview invites</h2>
+      <div id="my-invites" class="space-y-2 text-sm"><p class="text-slate-500">No invites yet.</p></div>
+    </div>
+  </div>
+</div>
+
+<!-- Vacancy modal -->
+<div id="vac-modal" class="hidden fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+  <div class="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-md space-y-3">
+    <h3 id="vac-modal-title" class="font-semibold text-lg">New vacancy</h3>
+    <input id="v-title" placeholder="Title" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+    <select id="v-cat" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm"></select>
+    <textarea id="v-desc" placeholder="Description" rows="3" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm"></textarea>
+    <textarea id="v-req" placeholder="Requirements" rows="3" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm"></textarea>
+    <label class="flex items-center gap-2 text-sm"><input id="v-active" type="checkbox" checked> Active</label>
+    <div class="flex gap-2 justify-end">
+      <button onclick="hideModal()" class="px-4 py-2 rounded-lg bg-slate-800 text-sm">Cancel</button>
+      <button onclick="saveVacancy()" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-sm font-medium">Save</button>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

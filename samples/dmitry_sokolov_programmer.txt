@@ -1,0 +1,23 @@
+Dmitry Sokolov
+Email: d.sokolov.dev@gmail.com
+GitHub: https://github.com/torvalds
+LinkedIn: https://www.linkedin.com/in/dmitry-sokolov-dev
+
+EXPERIENCE
+Backend developer, OmniPay (fintech startup), 2021-2025
+- Built payment processing API in Python/FastAPI handling ~40k requests/day
+- Migrated legacy monolith endpoints to async; cut p95 latency from 900ms to 210ms
+- Wrote integration test suite with pytest, coverage went from 12% to 68%
+- On-call rotation, debugged Postgres lock contention incidents
+
+Junior developer, WebCraft agency, 2019-2021
+- Django CRUD apps for 6 client projects
+- Wrote data import scripts (pandas), one-off scrapers with requests/BeautifulSoup
+
+SKILLS
+Python, FastAPI, Django, PostgreSQL, Redis, Docker, pytest, Git, Linux, Celery
+
+EDUCATION
+BSc Computer Science, ITMO University, 2019
+
+I spent 6 years mostly on backend Python work. I prefer small teams and boring, reliable code. I have not worked with Kubernetes much, only plain Docker, and I want to be upfront about that.
