@@ -41,9 +41,14 @@ def _strip(text: str):
     return None
 
 
-def chat(messages, json_mode=False, temperature=0.4, max_retries=3):
+# GLM "thinking" mode makes answers ~3x slower (≈22s vs ≈7s per call); off by default.
+THINKING = os.environ.get("ZAI_THINKING", "disabled")
+
+
+def chat(messages, json_mode=False, temperature=0.4, max_retries=2, thinking=None):
     """Call Z.ai chat completions; retries, model fallback, endpoint fallback."""
     last_err = None
+    thinking = thinking or THINKING
     models = [_model()]
     if models[0] != "glm-4.5":
         models.append("glm-4.5")
@@ -58,12 +63,17 @@ def chat(messages, json_mode=False, temperature=0.4, max_retries=3):
                 }
                 if json_mode:
                     body["response_format"] = {"type": "json_object"}
+                if thinking in ("enabled", "disabled"):
+                    body["thinking"] = {"type": thinking}
                 try:
                     r = httpx.post(
                         url,
                         headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
                         json=body, timeout=TIMEOUT,
                     )
+                    if r.status_code == 400 and "thinking" in r.text.lower() and thinking:
+                        thinking = None  # endpoint doesn't support the flag -> retry without it
+                        continue
                     if r.status_code in (401, 402, 403):
                         last_err = f"{r.status_code}: {r.text[:200]}"
                         break  # try next endpoint
@@ -80,11 +90,11 @@ def chat(messages, json_mode=False, temperature=0.4, max_retries=3):
     raise RuntimeError(f"LLM call failed: {last_err}")
 
 
-def chat_json(messages, temperature=0.2):
+def chat_json(messages, temperature=0.2, thinking=None):
     """chat() that guarantees a parsed JSON object; asks for JSON and re-tries parsing."""
     msgs = list(messages)
     for i in range(2):
-        text = chat(msgs, json_mode=(i == 0), temperature=temperature)
+        text = chat(msgs, json_mode=(i == 0), temperature=temperature, thinking=thinking)
         data = _strip(text)
         if isinstance(data, dict):
             return data

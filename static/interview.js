@@ -1,6 +1,14 @@
 /* AI interview page: Nova avatar, getUserMedia + video recording, Web Speech API voice, text fallback */
 const TOKEN = location.pathname.split("/").pop();
 let TOTAL = 0, ANSWERED = 0, BUSY = false, RECOGNITION = null, RECORDING = false;
+const LOCALES = { en: "en-US", ru: "ru-RU", az: "az-AZ" };
+const PHRASES = {
+  en: { first: "First question.", next: "Next question.", follow: "A follow-up.", done: "That's everything from my side, thank you! I'm preparing your report." },
+  ru: { first: "Первый вопрос.", next: "Следующий вопрос.", follow: "Уточняющий вопрос.", done: "Это все вопросы, спасибо! Готовлю ваш отчёт." },
+  az: { first: "Birinci sual.", next: "Növbəti sual.", follow: "Əlavə sual.", done: "Suallarım bu qədər idi, təşəkkür edirəm! Hesabatınızı hazırlayıram." },
+};
+let LANG = "en";
+const T = (k) => (PHRASES[LANG] || PHRASES.en)[k];
 let MEDIA_RECORDER = null, VIDEO_CHUNKS = [], CAM_STREAM = null, REC_UPLOADED = false;
 
 function toast(msg, type = "info") {
@@ -43,6 +51,9 @@ function speak(text, onDone) {
     speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.rate = 1.04;
+    u.lang = LOCALES[LANG] || "en-US";
+    const voice = speechSynthesis.getVoices().find(v => v.lang && v.lang.toLowerCase().startsWith(LANG));
+    if (voice) u.voice = voice;
     u.onstart = () => { TTS_PAUSED = false; setAvatar("speaking"); pauseBtnReset(); };
     u.onend = () => { setAvatar("idle"); pauseBtnReset(); if (onDone) onDone(); };
     u.onerror = () => { setAvatar("idle"); pauseBtnReset(); if (onDone) onDone(); };
@@ -174,6 +185,10 @@ async function init() {
     return;
   }
   document.getElementById("setup").classList.remove("hidden");
+  LANG = info.lang || "en";
+  document.getElementById("lang").value = LANG;
+  document.getElementById("lang").onchange = (e) => { LANG = e.target.value; RECOGNITION = null; };
+  if (info.answered > 0 || info.questions_total > 0) document.getElementById("start-btn").textContent = "▶ Continue interview";
   document.getElementById("vac-title").textContent = `${info.vacancy} — candidate: ${info.candidate}`;
   document.getElementById("hdr-info").textContent = `${info.candidate} · ${info.vacancy}`;
   document.getElementById("perm-btn").onclick = requestMedia;
@@ -208,7 +223,7 @@ function setupRecognition() {
     return;
   }
   RECOGNITION = new SR();
-  RECOGNITION.lang = "en-US";
+  RECOGNITION.lang = LOCALES[LANG] || "en-US";
   RECOGNITION.continuous = true;
   RECOGNITION.interimResults = true;
   let finalText = "";
@@ -256,15 +271,17 @@ function toggleMic() {
 async function startInterview() {
   document.getElementById("start-btn").innerHTML = '<span class="spin inline-block">⚙</span> Preparing…';
   try {
-    const res = await api(`/api/interview/${TOKEN}/start`, { method: "POST" });
+    const res = await api(`/api/interview/${TOKEN}/start`, { method: "POST", body: { lang: LANG } });
+    LANG = res.lang || LANG;
+    ANSWERED = res.answered || 0;
     startRecording();
     startLiveTracking();
     document.getElementById("setup").classList.add("hidden");
     document.getElementById("interview").classList.remove("hidden");
     TOTAL = res.total;
     document.getElementById("intro-text").textContent = res.intro;
-    setQuestion(res.question, false);
-    speak(res.intro + " First question. " + res.question);
+    setQuestion(res.question, !!res.followup);
+    speak(res.intro + " " + (ANSWERED ? "" : T("first") + " ") + res.question);
   } catch (e) {
     toast(e.message, "error");
     document.getElementById("start-btn").textContent = "▶ Start interview";
@@ -292,6 +309,8 @@ async function submitAnswer() {
   const answer = input.value.trim();
   if (!answer) return toast("Say or type an answer first", "error");
   BUSY = true;
+  document.getElementById("send-btn").disabled = true;
+  document.getElementById("mic-btn").disabled = true;
   ttsStop();
   document.getElementById("send-btn").innerHTML = '<span class="spin inline-block">⚙</span>';
   const qText = document.getElementById("question-text").textContent.replace(/^Follow-up:\s*/, "");
@@ -309,13 +328,15 @@ async function submitAnswer() {
     addTranscriptItem(`<div class="bg-indigo-950/40 border border-indigo-900 rounded-xl p-3 text-sm"><b class="text-indigo-300 text-xs">NOVA · ${res.score}/10</b><div class="mt-1 text-slate-300">${(res.feedback || "").replace(/</g, "&lt;")}</div></div>`);
     if (res.done) {
       await stopRecordingAndUpload();
-      speak(`That's everything from my side, thank you! Let me put together your report. For the last answer: ${res.score} out of 10. ${res.feedback || ""}`, () => finishInterview(res.report));
+      speak(`${res.feedback || ""} ${T("done")}`, () => finishInterview(res.report));
       return;
     }
-    speak(`${res.score} out of 10. ${res.feedback || ""} ${res.next_question ? "Next question." : "A follow-up."} ${res.next_question || res.followup}`);
+    speak(`${res.feedback || ""} ${res.next_question ? T("next") : T("follow")} ${res.next_question || res.followup}`);
     setTimeout(() => setQuestion(res.next_question || res.followup, !res.next_question), 800);
-  } catch (e) { toast(e.message, "error"); }
+  } catch (e) { toast(e.message, "error"); input.value = answer; }
   BUSY = false;
+  document.getElementById("send-btn").disabled = false;
+  document.getElementById("mic-btn").disabled = false;
   document.getElementById("send-btn").textContent = "Send";
 }
 

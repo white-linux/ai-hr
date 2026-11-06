@@ -2,10 +2,12 @@
 import io
 import json
 import math
+import os
 import re
 import secrets
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 from sqlmodel import select
@@ -152,7 +154,7 @@ UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, 
 def github_footprint(username):
     out = {"username": username, "repos": 0, "stars": 0, "languages": [], "top": [], "recent_push": None, "error": None}
     try:
-        r = httpx.get(f"https://api.github.com/users/{username}", headers=UA, timeout=15,
+        r = httpx.get(f"https://api.github.com/users/{username}", headers=UA, timeout=6,
                       follow_redirects=True)
         if r.status_code != 200:
             out["error"] = f"user not found ({r.status_code})"
@@ -161,7 +163,7 @@ def github_footprint(username):
         out["repos"] = u.get("public_repos", 0)
         out["recent_push"] = (u.get("updated_at") or "")[:10]
         r2 = httpx.get(f"https://api.github.com/users/{username}/repos?per_page=100&sort=updated",
-                       headers=UA, timeout=20, follow_redirects=True)
+                       headers=UA, timeout=8, follow_redirects=True)
         repos = r2.json() if r2.status_code == 200 else []
         repos = [x for x in repos if not x.get("fork")]
         out["stars"] = sum(x.get("stargazers_count", 0) for x in repos)
@@ -203,7 +205,7 @@ def footprint(cv: CV):
             entry["note"] = "LinkedIn blocks anonymous scraping (999) — marked not accessible"
         else:
             try:
-                r = httpx.get(url, headers=UA, timeout=12, follow_redirects=True)
+                r = httpx.get(url, headers=UA, timeout=5, follow_redirects=True)
                 if r.status_code == 200:
                     title = re.search(r"<title[^>]*>(.*?)</title>", r.text, re.S | re.I)
                     entry["note"] = ("reachable — " + title.group(1).strip()[:90]) if title else "reachable"
@@ -233,7 +235,7 @@ def footprint(cv: CV):
 # ---------------- Step 3: fit scoring ----------------
 def fit_score(cv: CV, vacancy) -> dict:
     out = llm.chat_json([
-        {"role": "system", "content": "You are a rigorous technical recruiter. Score candidate-job fit honestly."},
+        {"role": "system", "content": "You are a senior recruiter. Score candidate-job fit strictly against the stated requirements. Rubric: 85-100 meets all must-haves with proven depth; 70-84 meets most must-haves; 50-69 partial fit / notable gaps; 30-49 weak fit; <30 wrong profile. Required experience years are a must-have. Cite concrete evidence from the CV in strengths; never invent facts. missing_skills = requirements not evidenced in the CV."},
         {"role": "user", "content": f"VACANCY: {vacancy.title} ({vacancy.category})\nDescription: {vacancy.description}\nRequirements: {vacancy.requirements}\n\nCANDIDATE: {cv.candidate_name}, {cv.years_exp} yrs experience\nSkills: {', '.join(cv.skills_list())}\nCV (truncated):\n{cv.text[:4000]}\n\nReturn JSON: {{\"fit_score\": 0-100, \"strengths\": [\"...\"], \"weaknesses\": [\"...\"], \"missing_skills\": [\"...\"], \"summary\": \"2-3 sentences\"}}"},
     ])
     try:
@@ -246,57 +248,165 @@ def fit_score(cv: CV, vacancy) -> dict:
     return out
 
 
+# ---------------- Fast path: network checks in parallel + ONE LLM call ----------------
+def _check_link(l):
+    url = l.get("url", "")
+    entry = {"url": url, "type": l.get("type", "link"), "status": "ok", "note": ""}
+    if "linkedin.com" in url:
+        entry.update(status="blocked", note="LinkedIn blocks anonymous scraping (999) — marked not accessible")
+        return entry
+    try:
+        r = httpx.get(url, headers=UA, timeout=5, follow_redirects=True)
+        if r.status_code == 200:
+            title = re.search(r"<title[^>]*>(.*?)</title>", r.text, re.S | re.I)
+            entry["note"] = ("reachable — " + title.group(1).strip()[:90]) if title else "reachable"
+        else:
+            entry.update(status=f"http {r.status_code}", note="not accessible — continuing")
+    except Exception as e:
+        entry.update(status="unreachable", note=f"not accessible ({str(e)[:60]}) — continuing")
+    return entry
+
+
+def footprint_fetch(cv: CV):
+    """GitHub API + link checks, all in parallel, no LLM."""
+    links = cv.links_list()[:4]
+    gh_user = _github_user_from_links(cv.links_list())
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        gh_f = ex.submit(github_footprint, gh_user) if gh_user else None
+        link_res = list(ex.map(_check_link, links))
+    return {"github": gh_f.result() if gh_f else None, "links": link_res, "summary": "", "consistent": None, "notes": []}
+
+
+def score_all(cv: CV, vac, h_score: int, fp: dict) -> dict:
+    """Single LLM call: AI-text judge + footprint consistency + fit scoring."""
+    gh_brief = json.dumps(fp.get("github") or {"skipped": "no GitHub link in CV"})[:1200]
+    links_brief = json.dumps(fp.get("links") or [])[:600]
+    out = llm.chat_json([
+        {"role": "system", "content": "You are a senior recruiter and CV-forensics expert. Answer fast and concisely in JSON.\n"
+         "1) ai_probability 0-100 that the CV text is AI-generated (generic phrasing, no concrete numbers/names, template structure, buzzwords). Most human CVs score 10-40. ai_reasons must cite concrete features of the text itself (do not mention the local score).\n"
+         "2) Footprint: compare GitHub/links data with CV claims.\n"
+         "3) fit_score 0-100 vs vacancy requirements. Rubric: 85-100 meets all must-haves with proven depth; 70-84 most must-haves; 50-69 partial fit; 30-49 weak; <30 wrong profile. "
+         "Required years of experience are a must-have. Use only evidence from the CV, never invent facts."},
+        {"role": "user", "content": f"VACANCY: {vac.title} ({vac.category})\nDescription: {vac.description}\nRequirements: {vac.requirements}\n\n"
+         f"CANDIDATE: {cv.candidate_name}, {cv.years_exp} yrs\nSkills: {', '.join(cv.skills_list())}\nCV:\n{cv.text[:3500]}\n\n"
+         f"Local stylometry AI-score: {h_score}/100\nGitHub data: {gh_brief}\nOther links: {links_brief}\n\n"
+         'Return JSON: {"ai_probability": 0-100, "ai_reasons": ["max 3 short"], "footprint_summary": "1-2 sentences", "consistent": true/false/null, '
+         '"fit_score": 0-100, "strengths": ["max 4"], "weaknesses": ["max 3"], "missing_skills": ["..."], "summary": "2 sentences"}'},
+    ])
+    try:
+        out["fit_score"] = max(0, min(100, int(float(out.get("fit_score", 0)))))
+    except Exception:
+        out["fit_score"] = 50
+    for k in ("strengths", "weaknesses", "missing_skills", "ai_reasons"):
+        if not isinstance(out.get(k), list):
+            out[k] = [str(out[k])] if out.get(k) else []
+    return out
+
+
+def combine_ai(h_score, h_ev, i_score, i_ev, j_score, reasons):
+    try:
+        j_score = int(float(j_score))
+    except Exception:
+        j_score = h_score
+    final = max(0, min(100, round(0.5 * j_score + 0.35 * h_score + 0.15 * i_score)))
+    verdict = "Likely AI-generated" if final >= 70 else "Suspicious — mixed signals" if final >= 40 else "Likely human-written"
+    evidence = [f"LLM judge: {r}" for r in reasons[:4]] + h_ev + i_ev
+    return final, verdict, evidence[:12]
+
+
 # ---------------- Pipeline runner (background thread) ----------------
-def run_analysis(vacancy_id: int, cv_ids: list[int], run_id: str):
-    def _set(cid, step, label, done=False):
+UPLOADS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
+WORKERS = int(os.environ.get("ANALYSIS_WORKERS", "8"))
+
+
+def _doc_bytes(cv: CV):
+    if cv.file_path and cv.file_path.lower().endswith(".pdf"):
+        p = os.path.join(UPLOADS_DIR, os.path.basename(cv.file_path))
+        if os.path.exists(p):
+            with open(p, "rb") as f:
+                return f.read()
+    return None
+
+
+def _analyze_one(vacancy_id: int, cid: int, run_id: str, force: bool = False):
+    def _set(step, label, done=False, error=False):
         with _lock:
-            RUNS.setdefault(run_id, {})[str(cid)] = {"step": step, "label": label, "done": done}
+            RUNS.setdefault(run_id, {})[str(cid)] = {"step": step, "label": label, "done": done, "error": error}
 
     with Session(engine) as s:
         vac = s.get(Vacancy, vacancy_id)
-        for cid in cv_ids:
-            try:
-                cv = s.get(CV, cid)
-                if not cv or not vac:
-                    continue
-                _set(cid, 1, "AI-content detection…")
-                score, verdict, evid = ai_detect(cv, None)
-                cv.ai_score, cv.ai_verdict, cv.ai_evidence = score, verdict, json.dumps(evid)
-                s.add(cv); s.commit()
+        cv = s.get(CV, cid)
+        if not cv or not vac:
+            _set(3, "Skipped (not found)", done=True, error=True)
+            return
+        try:
+            cached = cv.ai_score is not None and bool(cv.github) and not force
+            _set(1, "AI-content detection…")
+            h_score, h_ev, _ = stylometry(cv.text)
+            i_score, i_ev = 0, []
+            if not cached:
+                b = _doc_bytes(cv)
+                i_score, i_ev = scan_pdf_images(b) if b else (0, ["Original file not stored (seed/text CV); image metadata skipped"])
 
-                _set(cid, 2, "Checking online footprint…")
-                fp = footprint(cv)
+            _set(2, "Checking online footprint…")
+            if cached:
+                fp = json.loads(cv.github)
+                f = fit_score(cv, vac)   # AI-score & footprint don't depend on the vacancy — reuse them
+            else:
+                fp = footprint_fetch(cv)
+                _set(3, "AI scoring (AI-text, footprint, fit)…")
+                f = score_all(cv, vac, h_score, fp)
+                cv.ai_score, cv.ai_verdict, ev = combine_ai(h_score, h_ev, i_score, i_ev, f.get("ai_probability", h_score), f.get("ai_reasons", []))
+                cv.ai_evidence = json.dumps(ev)
+                fp["summary"] = str(f.get("footprint_summary", ""))
+                fp["consistent"] = f.get("consistent")
                 cv.github = json.dumps(fp)
                 s.add(cv); s.commit()
 
-                _set(cid, 3, "Scoring fit vs vacancy…")
-                f = fit_score(cv, vac)
-                existing = s.exec(select(Analysis).where(
-                    Analysis.cv_id == cid, Analysis.vacancy_id == vacancy_id)).first()
-                a = existing or Analysis(cv_id=cid, vacancy_id=vacancy_id)
-                a.fit_score = f["fit_score"]
-                a.strengths = json.dumps(f.get("strengths", []))
-                a.weaknesses = json.dumps(f.get("weaknesses", []))
-                a.missing_skills = json.dumps(f.get("missing_skills", []))
-                a.summary = f.get("summary", "")
-                a.footprint_summary = fp.get("summary", "")
-                a.status = "done"
-                a.updated_at = now()
-                s.add(a); s.commit()
-                _set(cid, 3, "Done", done=True)
-            except Exception as e:
-                _set(cid, 3, f"Error: {str(e)[:120]}", done=True)
-                try:
-                    existing = s.exec(select(Analysis).where(Analysis.cv_id == cid, Analysis.vacancy_id == vacancy_id)).first()
-                    a = existing or Analysis(cv_id=cid, vacancy_id=vacancy_id)
-                    a.status = "error"; a.updated_at = now(); s.add(a); s.commit()
-                except Exception:
-                    pass
+            _set(3, "Scoring fit vs vacancy…")
+            a = s.exec(select(Analysis).where(Analysis.cv_id == cid, Analysis.vacancy_id == vacancy_id)).first() \
+                or Analysis(cv_id=cid, vacancy_id=vacancy_id)
+            a.fit_score = f["fit_score"]
+            a.strengths = json.dumps(f.get("strengths", []))
+            a.weaknesses = json.dumps(f.get("weaknesses", []))
+            a.missing_skills = json.dumps(f.get("missing_skills", []))
+            a.summary = f.get("summary", "")
+            a.footprint_summary = fp.get("summary", "")
+            a.status = "done"
+            a.updated_at = now()
+            s.add(a); s.commit()
+            _set(3, "Done", done=True)
+        except Exception as e:
+            _set(3, f"Error: {str(e)[:120]}", done=True, error=True)
+            try:
+                s.rollback()
+                a = s.exec(select(Analysis).where(Analysis.cv_id == cid, Analysis.vacancy_id == vacancy_id)).first() \
+                    or Analysis(cv_id=cid, vacancy_id=vacancy_id)
+                a.status = "error"; a.updated_at = now(); s.add(a); s.commit()
+            except Exception:
+                pass
+
+
+def run_analysis(vacancy_id: int, cv_ids: list[int], run_id: str, on_done=None, force=False):
+    """Analyze CVs in parallel (LLM/network bound), then call on_done(run_id) e.g. to auto-invite the best."""
+    with ThreadPoolExecutor(max_workers=max(1, WORKERS)) as ex:
+        list(ex.map(lambda cid: _analyze_one(vacancy_id, cid, run_id, force), cv_ids))
+    if on_done:
+        try:
+            extra = on_done(run_id) or {}
+            with _lock:
+                RUNS.setdefault(run_id, {}).update(extra)
+        except Exception as e:
+            with _lock:
+                RUNS.setdefault(run_id, {})["followup_error"] = str(e)[:150]
     with _lock:
         RUNS.setdefault(run_id, {})["finished"] = True
 
 
-def start_run(vacancy_id, cv_ids) -> str:
+def start_run(vacancy_id, cv_ids, on_done=None, force=False) -> str:
     run_id = f"run_{int(time.time())}_{secrets.token_hex(3)}"
-    threading.Thread(target=run_analysis, args=(vacancy_id, cv_ids, run_id), daemon=True).start()
+    with _lock:
+        RUNS[run_id] = {str(c): {"step": 0, "label": "Queued", "done": False, "error": False} for c in cv_ids}
+        RUNS[run_id]["vacancy_id"] = vacancy_id
+    threading.Thread(target=run_analysis, args=(vacancy_id, cv_ids, run_id, on_done, force), daemon=True).start()
     return run_id

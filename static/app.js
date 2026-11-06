@@ -1,375 +1,508 @@
-/* AI Recruiter dashboard logic */
+/* Ishveren — recruiter dashboard + candidate area */
+const CATS = ["Programmer", "Sales", "Manager", "Designer", "Marketing", "HR", "Other"];
 let ME = null, VACS = [], CVS = [], SEL_VAC = null, POLL = null, EDIT_VAC = null;
+let RESULTS = [], INVITES = [], REPORTS = {}, INVITE_FILTER = "all";
+
+/* ---------- helpers ---------- */
+function esc(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+const $ = (id) => document.getElementById(id);
+const vacById = (id) => VACS.find(v => v.id === id) || null;
+const aiCls = (s) => s == null ? "text-slate-500" : s >= 70 ? "text-red-400" : s >= 40 ? "text-amber-400" : "text-emerald-400";
+const fitColor = (s) => s >= 75 ? "bg-emerald-500" : s >= 50 ? "bg-amber-500" : "bg-red-500";
+const scoreCls = (s) => s >= 7 ? "text-emerald-400" : s >= 5 ? "text-amber-400" : "text-red-400";
+const fmtDate = (iso) => { try { return new Date(iso).toLocaleString([], { dateStyle: "short", timeStyle: "short" }); } catch { return ""; } };
 
 async function api(url, opts = {}) {
-  opts.headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
-  if (opts.body && typeof opts.body !== "string" && !(opts.body instanceof FormData)) opts.body = JSON.stringify(opts.body);
-  const r = await fetch(url, opts);
+  const isForm = opts.body instanceof FormData;
+  if (!isForm) opts.headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
+  if (opts.body && !isForm && typeof opts.body !== "string") opts.body = JSON.stringify(opts.body);
+  let r;
+  try { r = await fetch(url, opts); } catch { toast("Network error — is the server running?", "error"); throw new Error("network"); }
   if (r.status === 401 && !url.startsWith("/api/auth")) { location.reload(); throw new Error("auth"); }
   let data;
   try { data = await r.json(); } catch { data = {}; }
-  if (!r.ok) { toast(data.detail || r.statusText || "Request failed", "error"); throw new Error(data.detail || "err"); }
+  if (!r.ok) {
+    const msg = typeof data.detail === "string" ? data.detail : (r.statusText || "Request failed");
+    if (!opts.silent) toast(msg, "error");
+    throw new Error(msg);
+  }
   return data;
 }
 
 function toast(msg, type = "info") {
   const d = document.createElement("div");
-  const color = type === "error" ? "border-red-500 bg-red-950" : type === "ok" ? "border-emerald-500 bg-emerald-950" : "border-slate-600 bg-slate-900";
+  const color = type === "error" ? "border-red-500/70 bg-red-950/95" : type === "ok" ? "border-emerald-500/70 bg-emerald-950/95" : "border-slate-600 bg-slate-900/95";
   d.className = `${color} border rounded-xl px-4 py-3 text-sm shadow-lg opacity-0 transition-opacity duration-300`;
   d.textContent = msg;
-  document.getElementById("toasts").appendChild(d);
+  $("toasts").appendChild(d);
   requestAnimationFrame(() => d.classList.replace("opacity-0", "opacity-100"));
   setTimeout(() => { d.classList.replace("opacity-100", "opacity-0"); setTimeout(() => d.remove(), 300); }, 4500);
 }
 
-function copyText(t) { navigator.clipboard.writeText(t).then(() => toast("Copied to clipboard", "ok")); }
+function copyText(t) {
+  (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject())
+    .then(() => toast("Link copied to clipboard", "ok"))
+    .catch(() => prompt("Copy the link:", t));
+}
+
+function modalHtml(html, wide = false) {
+  closeModal();
+  const m = document.createElement("div");
+  m.id = "info-modal";
+  m.className = "fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4";
+  m.onclick = (e) => { if (e.target === m) closeModal(); };
+  m.innerHTML = `<div class="bg-slate-900 border border-slate-700 rounded-2xl p-6 ${wide ? "max-w-3xl" : "max-w-lg"} w-full max-h-[88vh] overflow-y-auto shadow-2xl">${html}
+    <div class="text-right mt-4"><button onclick="closeModal()" class="px-4 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm">Close</button></div></div>`;
+  document.body.appendChild(m);
+}
+function closeModal() {
+  if (LIVE_TIMER) { clearInterval(LIVE_TIMER); LIVE_TIMER = null; }
+  const m = $("info-modal"); if (m) m.remove();
+}
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeModal(); hideModal(); } });
+
+const list = (arr, cls = "") => (arr || []).length ? `<ul class="list-disc ml-5 space-y-0.5 ${cls}">${arr.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : `<span class="text-slate-500">—</span>`;
 
 /* ---------- auth ---------- */
 let REG = false;
 function setTab(reg) {
   REG = reg;
-  document.getElementById("tab-login").className = `flex-1 py-2 rounded-lg text-sm font-medium ${reg ? "bg-slate-800 text-slate-400" : "bg-indigo-600"}`;
-  document.getElementById("tab-reg").className = `flex-1 py-2 rounded-lg text-sm font-medium ${reg ? "bg-indigo-600" : "bg-slate-800 text-slate-400"}`;
-  document.getElementById("reg-name").classList.toggle("hidden", !reg);
-  document.getElementById("auth-btn").textContent = reg ? "Create account" : "Sign in";
+  $("tab-login").className = `flex-1 py-2 rounded-lg text-sm font-medium ${reg ? "text-slate-400" : "bg-indigo-600"}`;
+  $("tab-reg").className = `flex-1 py-2 rounded-lg text-sm font-medium ${reg ? "bg-indigo-600" : "text-slate-400"}`;
+  $("reg-name").classList.toggle("hidden", !reg);
+  $("auth-btn").textContent = reg ? "Create account" : "Sign in";
 }
-document.getElementById("tab-login").onclick = () => setTab(false);
-document.getElementById("tab-reg").onclick = () => setTab(true);
-document.getElementById("auth-btn").onclick = async () => {
-  const body = { email: document.getElementById("f-email").value.trim(), password: document.getElementById("f-pass").value, name: document.getElementById("f-name").value.trim() };
+$("tab-login").onclick = () => setTab(false);
+$("tab-reg").onclick = () => setTab(true);
+$("auth-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const body = { email: $("f-email").value.trim(), password: $("f-pass").value, name: $("f-name").value.trim() };
   if (!body.email || !body.password) return toast("Enter email and password", "error");
-  try {
-    await api(REG ? "/api/auth/register" : "/api/auth/login", { method: "POST", body });
-    location.reload();
-  } catch {}
+  if (REG && body.password.length < 6) return toast("Password must be at least 6 characters", "error");
+  $("auth-btn").disabled = true;
+  try { await api(REG ? "/api/auth/register" : "/api/auth/login", { method: "POST", body }); location.reload(); }
+  catch { $("auth-btn").disabled = false; }
 };
+async function logout() { await api("/api/auth/logout", { method: "POST" }).catch(() => {}); location.reload(); }
 
 /* ---------- boot ---------- */
 (async function boot() {
-  const cats = ["Programmer", "Sales", "Manager", "Designer", "Marketing", "HR", "Other"];
-  for (const c of cats) document.getElementById("v-cat").insertAdjacentHTML("beforeend", `<option>${c}</option>`);
-  try { ME = await api("/api/auth/me"); } catch { return; }
-  document.getElementById("auth-view").classList.add("hidden");
-  document.getElementById("app-view").classList.remove("hidden");
-  document.getElementById("user-label").textContent = `${ME.name} (${ME.role.toLowerCase()})`;
+  for (const c of CATS) $("v-cat").insertAdjacentHTML("beforeend", `<option>${c}</option>`);
+  try { ME = await api("/api/auth/me", { silent: true }); } catch { return; }
+  $("auth-view").classList.add("hidden");
+  $("app-view").classList.remove("hidden");
+  $("user-label").textContent = `${ME.name} · ${ME.role === "ADMIN" ? "recruiter" : "candidate"}`;
   VACS = await api("/api/vacancies");
-  if (ME.role === "ADMIN") { initAdmin(); } else { initCandidate(); }
+  if (ME.role === "ADMIN") initAdmin(); else initCandidate();
 })();
 
 function initAdmin() {
-  document.getElementById("admin-view").classList.remove("hidden");
-  loadCVs();
-  renderVacs();
-  loadInvites();
-  renderChat([], null);
-  document.getElementById("cv-upload").addEventListener("change", uploadCVs);
+  $("admin-view").classList.remove("hidden");
+  $("videos-btn").classList.remove("hidden");
+  loadCVs(); renderVacs(); loadInvites(); renderChat(); renderChips();
+  $("cv-upload").addEventListener("change", (e) => { uploadCVs([...e.target.files]); e.target.value = ""; });
+  $("cv-search").addEventListener("input", renderCVs);
+  $("chat-form").onsubmit = (e) => { e.preventDefault(); sendChat(); };
+  $("vac-form").onsubmit = (e) => { e.preventDefault(); saveVacancy(); };
+  const dz = $("drop-zone");
+  ["dragenter", "dragover"].forEach(ev => document.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add("border-indigo-500", "text-indigo-300"); }));
+  ["dragleave", "drop"].forEach(ev => document.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.remove("border-indigo-500", "text-indigo-300"); }));
+  document.addEventListener("drop", (e) => { const f = [...(e.dataTransfer?.files || [])]; if (f.length) uploadCVs(f); });
+  setInterval(() => { if (!document.hidden) loadInvites(true); }, 10000);
+}
+
+function renderKPIs() {
+  const done = INVITES.filter(i => i.completed);
+  const live = INVITES.filter(i => i.live).length;
+  const items = [
+    ["CVs", CVS.length], ["Vacancies", VACS.filter(v => v.active).length],
+    ["Interviews", INVITES.length], ["Completed", done.length], ["Hire", done.filter(i => i.decision === "HIRE").length],
+  ];
+  $("kpis").innerHTML = items.map(([k, v]) => `<span class="px-2.5 py-1 rounded-lg bg-slate-800/80 text-slate-400">${k} <b class="text-slate-100">${v}</b></span>`).join("")
+    + (live ? `<span class="px-2.5 py-1 rounded-lg bg-emerald-900/70 text-emerald-300 animate-pulse">● ${live} live</span>` : "");
 }
 
 /* ---------- CV library ---------- */
-async function loadCVs() {
-  CVS = await api("/api/cvs");
-  renderCVs();
-}
+async function loadCVs() { CVS = await api("/api/cvs"); renderCVs(); renderKPIs(); }
 
 function renderCVs() {
-  const box = document.getElementById("cv-list");
-  const cats = ["Programmer", "Sales", "Manager", "Designer", "Marketing", "HR", "Other"];
-  const filter = SEL_VAC ? (VACS.find(v => v.id === SEL_VAC) || {}).category : null;
+  const box = $("cv-list");
+  const filter = SEL_VAC ? (vacById(SEL_VAC) || {}).category : null;
+  const q = $("cv-search").value.trim().toLowerCase();
+  $("cv-count").textContent = `(${CVS.length})`;
+  $("cv-filter-note").classList.toggle("hidden", !filter);
+  $("cv-filter-note").innerHTML = filter ? `Filtered by vacancy category: <b>${esc(filter)}</b> · <button class="underline" onclick="selectVac(null)">show all</button>` : "";
+  const invited = new Set(INVITES.filter(i => i.vacancy_id === SEL_VAC).map(i => i.cv_id));
   let html = "";
-  for (const cat of cats) {
+  for (const cat of CATS) {
     if (filter && cat !== filter) continue;
-    const items = CVS.filter(c => c.category === cat);
+    const items = CVS.filter(c => c.category === cat && (!q || [c.name, c.filename, c.email, ...(c.skills || [])].join(" ").toLowerCase().includes(q)));
     if (!items.length) continue;
-    html += `<div><div class="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">${cat} (${items.length})</div><div class="space-y-1">`;
+    html += `<div><div class="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1.5">${cat} · ${items.length}</div><div class="space-y-1.5">`;
     for (const c of items) {
-      const ai = c.ai_score;
-      const aiCls = ai == null ? "text-slate-500" : ai >= 70 ? "text-red-400" : ai >= 40 ? "text-amber-400" : "text-emerald-400";
-      html += `<div class="group bg-slate-800/60 hover:bg-slate-800 rounded-lg px-3 py-2 text-sm cursor-pointer" onclick="showCV(${c.id})">
+      const applied = c.vacancy_id ? vacById(c.vacancy_id) : null;
+      html += `<div class="group bg-slate-800/50 hover:bg-slate-800 border border-transparent hover:border-slate-700 rounded-lg px-3 py-2 text-sm cursor-pointer" onclick="showCV(${c.id})">
         <div class="flex items-center justify-between gap-2">
           <span class="truncate font-medium">${esc(c.name || c.filename)}</span>
-          <span class="${aiCls} text-xs font-semibold shrink-0">${ai == null ? "—" : "AI " + ai}</span>
+          <span class="${aiCls(c.ai_score)} text-[11px] font-semibold shrink-0" title="AI-generated probability">${c.ai_score == null ? "not scanned" : "AI " + c.ai_score + "%"}</span>
         </div>
-        <div class="text-xs text-slate-500 truncate">${esc(c.filename)}${c.years_exp ? " · " + c.years_exp + " yrs" : ""}${c.email ? " · " + esc(c.email) : ""}</div>
-        <div class="hidden group-hover:flex gap-2 mt-1">
-          <button onclick="event.stopPropagation();inviteCV(${c.id})" class="text-xs px-2 py-0.5 rounded bg-emerald-700 hover:bg-emerald-600">Invite</button>
-          <button onclick="event.stopPropagation();delCV(${c.id})" class="text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-red-700">Delete</button>
+        <div class="text-xs text-slate-500 truncate">${c.years_exp ? c.years_exp + " yrs · " : ""}${esc((c.skills || []).slice(0, 4).join(", ") || c.filename)}</div>
+        ${applied ? `<div class="text-[11px] text-sky-400 mt-0.5">📨 applied: ${esc(applied.title)}</div>` : ""}
+        <div class="flex gap-1.5 mt-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+          ${SEL_VAC ? `<button onclick="event.stopPropagation();inviteCV(${c.id})" class="text-[11px] px-2 py-0.5 rounded bg-emerald-700 hover:bg-emerald-600">${invited.has(c.id) ? "✓ Invited · copy" : "Invite"}</button>` : ""}
+          <button onclick="event.stopPropagation();delCV(${c.id})" class="text-[11px] px-2 py-0.5 rounded bg-slate-700 hover:bg-red-700">Delete</button>
         </div>
       </div>`;
     }
     html += "</div></div>";
   }
-  box.innerHTML = html || `<p class="text-slate-500 text-sm">No CVs${filter ? " in category '" + filter + "'" : ""}.</p>`;
+  box.innerHTML = html || `<p class="text-slate-500 text-sm text-center py-6">${q ? "Nothing matches your search." : "No CVs" + (filter ? ` in category '${esc(filter)}'` : "") + ". Upload some!"}</p>`;
 }
 
-async function uploadCVs(e) {
-  const files = [...e.target.files];
-  if (!files.length) return;
-  const st = document.getElementById("upload-status");
-  st.innerHTML = `<span class="spin inline-block">⚙</span> Parsing ${files.length} file(s) with AI…`;
+async function uploadCVs(files) {
+  files = files.filter(f => /\.(pdf|docx|txt)$/i.test(f.name));
+  if (!files.length) return toast("Only PDF, DOCX and TXT files are supported", "error");
+  const st = $("upload-status");
+  st.innerHTML = `<span class="spin">⚙</span> AI is parsing ${files.length} file(s): category, skills, experience, links…`;
   const fd = new FormData();
   files.forEach(f => fd.append("files", f));
-  const r = await fetch("/api/cvs/upload", { method: "POST", body: fd });
-  st.textContent = "";
-  if (!r.ok) { toast("Upload failed", "error"); return; }
-  const data = await r.json();
-  for (const res of data.results) {
-    if (res.error) toast(`${res.file}: ${res.error}`, "error");
-    else toast(`Parsed ${res.cv.name} → ${res.cv.category}`, "ok");
-  }
-  e.target.value = "";
+  try {
+    const data = await api("/api/cvs/upload", { method: "POST", body: fd });
+    let ok = 0;
+    for (const res of data.results) {
+      if (res.error) toast(`${res.file}: ${res.error}`, "error");
+      else { ok++; toast(`✓ ${res.cv.name} → ${res.cv.category}`, "ok"); }
+    }
+    st.textContent = ok ? `Added ${ok} CV(s).` : "";
+    setTimeout(() => st.textContent = "", 4000);
+  } catch { st.textContent = ""; }
   loadCVs();
 }
 
 async function delCV(id) {
-  if (!confirm("Delete this CV?")) return;
+  if (!confirm("Delete this CV and its analysis results?")) return;
   await api(`/api/cvs/${id}`, { method: "DELETE" });
-  loadCVs();
+  toast("CV deleted", "ok");
+  loadCVs(); if (SEL_VAC) loadResults();
 }
 
 function showCV(id) {
   const c = CVS.find(x => x.id === id);
   if (!c) return;
-  const links = (c.links || []).map(l => `<a href="${esc(l.url)}" target="_blank" class="text-indigo-400 underline">${esc(l.type)}</a>`).join(" · ") || "—";
-  const gh = c.github ? `<div class="mt-2 p-2 bg-slate-800/60 rounded-lg text-xs">
-      <b>GitHub (@${esc(c.github.username || "")}):</b> ${c.github.error ? esc(c.github.error) : `${c.github.repos} repos · ${c.github.stars}★ · langs: ${esc((c.github.languages || []).join(", "))}`}
-      ${(c.github.top || []).map(t => `<div class="mt-1 text-slate-400">• ${esc(t.name)} (${t.stars}★, ${esc(t.lang || "?")})</div>`).join("")}
+  const r = RESULTS.find(x => x.cv.id === id);
+  const links = (c.links || []).map(l => `<a href="${esc(l.url)}" target="_blank" rel="noopener" class="text-indigo-400 hover:underline">${esc(l.type)}</a>`).join(" · ") || "—";
+  const gh = c.github && c.github.username ? `<div class="mt-3 p-3 bg-slate-800/60 rounded-lg text-xs">
+      <b>GitHub @${esc(c.github.username)}</b>: ${c.github.error ? `<span class="text-amber-400">${esc(c.github.error)}</span>` : `${c.github.repos} repos · ${c.github.stars}★ · ${esc((c.github.languages || []).join(", "))}`}
+      ${(c.github.top || []).map(t => `<div class="mt-1 text-slate-400">• ${esc(t.name)} — ${t.stars}★ ${esc(t.lang || "")} ${t.desc ? "· " + esc(t.desc) : ""}</div>`).join("")}
     </div>` : "";
-  modalHtml(`<h3 class="font-semibold text-lg mb-1">${esc(c.name || c.filename)}</h3>
-    <div class="text-xs text-slate-400 mb-3">${c.category} · ${c.years_exp} yrs · ${esc(c.email || "no email")} · links: ${links}</div>
-    <div class="mb-2"><b class="text-sm">Skills:</b> <span class="text-sm text-slate-300">${esc((c.skills || []).join(", ")) || "—"}</span></div>
-    <div class="mb-2 text-sm"><b>AI detector:</b> <span class="${c.ai_score >= 70 ? "text-red-400" : c.ai_score >= 40 ? "text-amber-400" : "text-emerald-400"} font-semibold">${c.ai_score == null ? "not analyzed" : c.ai_score + "/100 — " + esc(c.ai_verdict)}</span></div>
-    <ul class="text-xs text-slate-400 list-disc ml-5 space-y-0.5 mb-2">${(c.ai_evidence || []).map(e => `<li>${esc(e)}</li>`).join("")}</ul>
-    ${gh}`);
+  modalHtml(`<div class="flex items-start justify-between gap-3 mb-1">
+      <h3 class="font-semibold text-lg">${esc(c.name || c.filename)}</h3>
+      <span class="text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-300 shrink-0">${esc(c.category)}</span></div>
+    <div class="text-xs text-slate-400 mb-3">${c.years_exp} yrs · ${esc(c.email || "no email")} · ${esc(c.filename)} · links: ${links}</div>
+    <div class="flex flex-wrap gap-1 mb-3">${(c.skills || []).map(s => `<span class="text-[11px] px-2 py-0.5 rounded-full bg-indigo-950 border border-indigo-900 text-indigo-200">${esc(s)}</span>`).join("") || '<span class="text-slate-500 text-sm">no skills parsed</span>'}</div>
+    ${r && r.status === "done" ? fitBlock(r) : ""}
+    <div class="text-sm mt-3"><b>AI-content detector:</b> <span class="${aiCls(c.ai_score)} font-semibold">${c.ai_score == null ? "not analyzed yet — run analysis" : c.ai_score + "/100 — " + esc(c.ai_verdict)}</span></div>
+    ${(c.ai_evidence || []).length ? `<div class="text-xs text-slate-400 mt-1">${list(c.ai_evidence)}</div>` : ""}
+    ${c.footprint && c.footprint.summary ? `<div class="text-sm mt-3"><b>Online footprint:</b> ${c.footprint.consistent === true ? '<span class="text-emerald-400">consistent with CV</span>' : c.footprint.consistent === false ? '<span class="text-amber-400">inconsistencies found</span>' : ""}<p class="text-xs text-slate-400 mt-1">${esc(c.footprint.summary)}</p>
+      ${(c.footprint.links || []).map(l => `<div class="text-[11px] text-slate-500 truncate">• ${esc(l.type)}: ${esc(l.status)} — ${esc(l.note)}</div>`).join("")}</div>` : ""}
+    ${gh}`, true);
+}
+
+function fitBlock(r) {
+  return `<div class="p-3 rounded-lg bg-slate-800/50 border border-slate-700">
+    <div class="flex items-center justify-between text-sm mb-1"><b>Fit for “${esc((vacById(SEL_VAC) || {}).title || "")}”</b><b class="text-indigo-300">${r.fit_score}/100</b></div>
+    <div class="bar mb-2"><i class="${fitColor(r.fit_score)}" style="width:${r.fit_score}%"></i></div>
+    <p class="text-xs text-slate-300 mb-2">${esc(r.summary)}</p>
+    <div class="grid sm:grid-cols-3 gap-3 text-xs">
+      <div><div class="text-emerald-400 font-semibold mb-1">Strengths</div>${list(r.strengths, "text-slate-400")}</div>
+      <div><div class="text-amber-400 font-semibold mb-1">Weaknesses</div>${list(r.weaknesses, "text-slate-400")}</div>
+      <div><div class="text-red-400 font-semibold mb-1">Missing skills</div>${list(r.missing_skills, "text-slate-400")}</div>
+    </div></div>`;
 }
 
 async function inviteCV(id) {
   if (!SEL_VAC) return toast("Select a vacancy first", "error");
   const res = await api("/api/invites", { method: "POST", body: { cv_id: id, vacancy_id: SEL_VAC } });
-  toast("Invite created — link copied", "ok");
+  toast(res.reused ? "Open invite already exists — link copied" : "Invite created — link copied", "ok");
   copyText(res.link);
   loadInvites();
 }
 
+async function inviteBest() {
+  const best = RESULTS.find(r => r.status === "done");
+  if (!best) return toast("Run the analysis first", "error");
+  inviteCV(best.cv.id);
+}
+
 /* ---------- vacancies ---------- */
 function renderVacs() {
-  const box = document.getElementById("vac-list");
-  box.innerHTML = VACS.map(v => `
-    <div class="rounded-lg p-3 cursor-pointer border ${v.id === SEL_VAC ? "border-indigo-500 bg-indigo-950/40" : "border-slate-800 bg-slate-800/40 hover:bg-slate-800"}" onclick="selectVac(${v.id})">
-      <div class="flex items-center justify-between">
-        <span class="font-medium text-sm">${esc(v.title)}</span>
-        ${v.active ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900 text-emerald-400">active</span>' : '<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-400">off</span>'}
+  $("vac-list").innerHTML = VACS.map(v => {
+    const n = CVS.filter(c => c.category === v.category).length;
+    return `<div class="group rounded-lg p-3 cursor-pointer border transition-colors ${v.id === SEL_VAC ? "border-indigo-500 bg-indigo-950/40" : "border-slate-800 bg-slate-800/40 hover:bg-slate-800"}" onclick="selectVac(${v.id})">
+      <div class="flex items-center justify-between gap-2">
+        <span class="font-medium text-sm truncate">${esc(v.title)}</span>
+        ${v.active ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/70 text-emerald-400">active</span>' : '<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-400">closed</span>'}
       </div>
-      <div class="text-xs text-slate-500 mt-0.5">${v.category}</div>
-      <div class="hidden group-hover:flex gap-2 mt-1">
-        <button onclick="event.stopPropagation();editVacancy(${v.id})" class="text-xs px-2 py-0.5 rounded bg-slate-700">Edit</button>
-        <button onclick="event.stopPropagation();delVac(${v.id})" class="text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-red-700">Delete</button>
+      <div class="flex items-center justify-between mt-0.5">
+        <span class="text-xs text-slate-500">${esc(v.category)} · ${n} CV(s)</span>
+        <span class="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <button onclick="event.stopPropagation();editVacancy(${v.id})" class="text-[11px] px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600">Edit</button>
+          <button onclick="event.stopPropagation();delVac(${v.id})" class="text-[11px] px-2 py-0.5 rounded bg-slate-700 hover:bg-red-700">Delete</button>
+        </span>
       </div>
-    </div>`).join("") || '<p class="text-slate-500 text-sm">No vacancies.</p>';
+    </div>`;
+  }).join("") || '<p class="text-slate-500 text-sm">No vacancies yet.</p>';
 }
 
 async function selectVac(id) {
   SEL_VAC = id;
-  renderVacs();
-  renderCVs();
-  document.getElementById("results-vac").textContent = "— " + ((VACS.find(v => v.id === id) || {}).title || "");
+  renderVacs(); renderCVs();
+  $("results-vac").textContent = id ? "— " + ((vacById(id) || {}).title || "") : "";
+  $("invite-best-btn").classList.add("hidden");
+  if (!id) {
+    RESULTS = [];
+    $("stats-bar").innerHTML = "";
+    $("results-list").innerHTML = '<div class="text-center text-slate-500 text-sm py-10">👉 Select a vacancy on the right to see ranked candidates.</div>';
+    return;
+  }
   await loadResults();
 }
 
 function editVacancy(id) {
   EDIT_VAC = id;
-  const v = id ? VACS.find(x => x.id === id) : null;
-  document.getElementById("vac-modal-title").textContent = v ? "Edit vacancy" : "New vacancy";
-  document.getElementById("v-title").value = v ? v.title : "";
-  document.getElementById("v-cat").value = v ? v.category : "Programmer";
-  document.getElementById("v-desc").value = v ? v.description : "";
-  document.getElementById("v-req").value = v ? v.requirements : "";
-  document.getElementById("v-active").checked = v ? v.active : true;
-  document.getElementById("vac-modal").classList.remove("hidden");
+  const v = id ? vacById(id) : null;
+  $("vac-modal-title").textContent = v ? "Edit vacancy" : "New vacancy";
+  $("v-title").value = v ? v.title : "";
+  $("v-cat").value = v ? v.category : "Programmer";
+  $("v-desc").value = v ? v.description : "";
+  $("v-req").value = v ? v.requirements : "";
+  $("v-active").checked = v ? v.active : true;
+  $("vac-modal").classList.remove("hidden");
+  setTimeout(() => $("v-title").focus(), 50);
 }
-function hideModal() { document.getElementById("vac-modal").classList.add("hidden"); }
+function hideModal() { $("vac-modal").classList.add("hidden"); }
 
 async function saveVacancy() {
-  const body = {
-    title: document.getElementById("v-title").value, category: document.getElementById("v-cat").value,
-    description: document.getElementById("v-desc").value, requirements: document.getElementById("v-req").value,
-    active: document.getElementById("v-active").checked,
-  };
-  if (!body.title) return toast("Title required", "error");
-  if (EDIT_VAC) await api(`/api/vacancies/${EDIT_VAC}`, { method: "PUT", body });
-  else VACS = [...VACS, await api("/api/vacancies", { method: "POST", body })];
-  hideModal(); toast("Saved", "ok");
+  const body = { title: $("v-title").value.trim(), category: $("v-cat").value, description: $("v-desc").value.trim(), requirements: $("v-req").value.trim(), active: $("v-active").checked };
+  if (!body.title) return toast("Title is required", "error");
+  try {
+    if (EDIT_VAC) await api(`/api/vacancies/${EDIT_VAC}`, { method: "PUT", body });
+    else await api("/api/vacancies", { method: "POST", body });
+  } catch { return; }
+  hideModal(); toast("Vacancy saved", "ok");
   VACS = await api("/api/vacancies");
-  renderVacs();
+  renderVacs(); renderCVs(); renderKPIs();
+  if (SEL_VAC) $("results-vac").textContent = "— " + ((vacById(SEL_VAC) || {}).title || "");
 }
 
 async function delVac(id) {
-  if (!confirm("Delete vacancy?")) return;
+  if (!confirm("Delete this vacancy?")) return;
   await api(`/api/vacancies/${id}`, { method: "DELETE" });
   VACS = await api("/api/vacancies");
-  if (SEL_VAC === id) { SEL_VAC = null; document.getElementById("results-vac").textContent = ""; }
-  renderVacs(); renderCVs();
+  if (SEL_VAC === id) selectVac(null); else { renderVacs(); renderCVs(); }
+  renderKPIs();
 }
 
 /* ---------- analysis ---------- */
-async function runAnalysis() {
+async function runAnalysis(force = false) {
   if (!SEL_VAC) return toast("Select a vacancy first", "error");
+  if (force && !confirm("Full re-scan: re-run AI detection and online footprint for every CV (slower). Continue?")) return;
   try {
-    const res = await api("/api/analyze", { method: "POST", body: { vacancy_id: SEL_VAC } });
-    toast(`Analyzing ${res.cv_count} CV(s)…`, "ok");
-    pollProgress(res.run_id);
+    const res = await api("/api/analyze", { method: "POST", body: { vacancy_id: SEL_VAC, force } });
+    toast(`Analyzing ${res.cv_count} CV(s) — results appear as soon as each CV is ready`, "ok");
+    pollProgress(res.run_id, SEL_VAC);
   } catch {}
 }
 
-function pollProgress(runId) {
+function pollProgress(runId, vacId) {
   if (POLL) clearInterval(POLL);
-  document.getElementById("run-btn").innerHTML = '<span class="spin inline-block">⚙</span> Running…';
-  POLL = setInterval(async () => {
+  $("run-btn").disabled = true;
+  $("run-btn").innerHTML = '<span class="spin">⚙</span> Running…';
+  $("progress-wrap").classList.remove("hidden");
+  const tick = async () => {
     let p;
-    try { p = await api(`/api/analyze/progress/${runId}`); } catch { return; }
-    renderProgress(p);
+    try { p = await api(`/api/analyze/progress/${runId}`, { silent: true }); } catch { return; }
+    if (!(vacId && vacId !== SEL_VAC)) { const pend = renderProgress(p); if (!p.finished) loadResults(pend); }
     if (p.finished) {
       clearInterval(POLL); POLL = null;
-      document.getElementById("run-btn").textContent = "▶ Run analysis";
-      loadResults(); loadCVs();
-      toast("Analysis complete", "ok");
+      $("run-btn").disabled = false;
+      $("run-btn").textContent = "▶ Run analysis";
+      $("progress-wrap").classList.add("hidden");
+      const errs = Object.values(p).filter(v => v && v.error).length;
+      toast(errs ? `Analysis finished with ${errs} error(s)` : "Analysis complete", errs ? "error" : "ok");
+      if (p.invite) {
+        toast(`🏆 Invited ${p.invite.candidate} (fit ${p.invite.fit}/100) — link copied`, "ok");
+        copyText(p.invite.link);
+        pushAI(`🏆 Analysis done — invited the best candidate <b>${esc(p.invite.candidate)}</b> (fit ${p.invite.fit}/100).\n<span class="text-indigo-300">${esc(p.invite.link)}</span>`);
+      }
+      if (p.followup_error) toast(p.followup_error, "error");
+      await loadCVs(); loadResults(); loadInvites();
     }
-  }, 2000);
+  };
+  tick();
+  POLL = setInterval(tick, 1500);
 }
 
 function renderProgress(p) {
-  const rows = Object.entries(p).filter(([k]) => k !== "finished").map(([cid, v]) => {
+  const entries = Object.entries(p).filter(([k, v]) => /^\d+$/.test(k) && v && typeof v === "object");
+  const total = entries.length || 1;
+  const units = entries.reduce((a, [, v]) => a + (v.done ? 3 : Math.max(0, v.step - 1)), 0);
+  const pct = Math.round(units / (total * 3) * 100);
+  $("progress-bar").style.width = pct + "%";
+  $("progress-pct").textContent = pct + "%";
+  $("progress-label").textContent = `Analyzing ${entries.filter(([, v]) => v.done).length}/${entries.length} CVs`;
+  const steps = ["AI detection", "Footprint", "AI scoring"];
+  const pending = entries.filter(([, v]) => !v.done);
+  const html = pending.map(([cid, v]) => {
     const c = CVS.find(x => x.id == cid) || {};
-    const steps = ["🔍 AI detection", "🌐 Footprint", "🎯 Fit score"];
-    return `<div class="bg-slate-800/60 rounded-lg px-3 py-2 text-sm flex items-center justify-between">
-      <span class="truncate">${esc(c.name || c.filename || "CV #" + cid)}</span>
-      <span class="text-xs ${v.done ? "text-emerald-400" : "text-indigo-300"}">${v.done ? "✓ done" : steps[v.step - 1] || v.label}</span>
-    </div>`;
+    const dots = steps.map((s, i) => {
+      const st = v.done && !v.error ? "done" : v.step > i + 1 ? "done" : v.step === i + 1 ? "run" : "wait";
+      return `<span class="flex items-center gap-1 ${st === "done" ? "text-emerald-400" : st === "run" ? "text-indigo-300" : "text-slate-600"}">${st === "done" ? "✓" : st === "run" ? '<span class="spin">◌</span>' : "○"} ${s}</span>`;
+    }).join("");
+    return `<div class="bg-slate-800/50 rounded-lg px-3 py-2 text-sm">
+      <div class="flex items-center justify-between gap-2"><span class="truncate font-medium">${esc(c.name || "CV #" + cid)}</span>
+      <span class="text-[11px] text-indigo-300 truncate">${esc(v.label)}</span></div>
+      <div class="flex gap-3 text-[11px] mt-1">${dots}</div></div>`;
   }).join("");
-  document.getElementById("results-list").innerHTML = rows || '<p class="text-slate-500 text-sm">Working…</p>';
+  return { ids: new Set(pending.map(([cid]) => Number(cid))), html };
 }
 
-async function loadResults() {
+async function loadResults(pend = null) {
   if (!SEL_VAC) return;
-  const data = await api(`/api/results/${SEL_VAC}`);
-  const box = document.getElementById("results-list");
-  const st = document.getElementById("stats-bar");
-  if (!data.results.length) { box.innerHTML = '<p class="text-slate-500 text-sm">No analysis yet. Click "Run analysis".</p>'; st.innerHTML = ""; return; }
+  const vid = SEL_VAC;
+  let data;
+  try { data = await api(`/api/results/${vid}`, { silent: !!pend }); } catch { return; }
+  if (vid !== SEL_VAC || (!pend && POLL)) return;
+  // while a run is active, hide stale rows of CVs that are still being (re)analyzed
+  RESULTS = pend ? data.results.filter(r => !pend.ids.has(r.cv.id)) : data.results;
+  const box = $("results-list"), st = $("stats-bar");
+  const pendHtml = pend && pend.html ? `<div class="space-y-2 mb-2">${pend.html}</div>` : "";
+  if (!RESULTS.length && pend) { box.innerHTML = pendHtml || '<p class="text-slate-500 text-sm">Working…</p>'; return; }
+  if (!RESULTS.length) {
+    st.innerHTML = "";
+    $("invite-best-btn").classList.add("hidden");
+    const n = CVS.filter(c => c.category === (vacById(vid) || {}).category).length;
+    box.innerHTML = `<div class="text-center text-slate-500 text-sm py-10">No analysis yet for this vacancy (${n} CV(s) in category).<br>Click <b class="text-emerald-400">▶ Run analysis</b>.</div>`;
+    return;
+  }
   const s = data.stats;
-  st.innerHTML = [s.count + " analyzed", s.avg_fit != null ? `avg fit ${s.avg_fit}` : null, s.avg_ai != null ? `avg AI-score ${s.avg_ai}` : null, s.skill_coverage != null ? `full skill coverage ${s.skill_coverage}%` : null]
-    .filter(Boolean).map(x => `<span class="px-2 py-1 rounded bg-slate-800 text-slate-300">${x}</span>`).join("");
-  box.innerHTML = data.results.map((r, i) => {
-    const c = r.cv;
-    const best = r.status === "done" && i === data.results.findIndex(x => x.status === "done");
-    const aiCls = c.ai_score == null ? "text-slate-500" : c.ai_score >= 70 ? "text-red-400" : c.ai_score >= 40 ? "text-amber-400" : "text-emerald-400";
-    return `<div class="rounded-xl p-3 border ${best ? "border-amber-500 bg-amber-950/20" : "border-slate-800 bg-slate-800/40"}">
-      <div class="flex items-center justify-between gap-2">
+  const stat = (label, val, hint) => `<div class="rounded-lg bg-slate-800/60 px-3 py-2" title="${hint}"><div class="text-slate-500">${label}</div><div class="text-base font-semibold text-slate-100">${val ?? "—"}</div></div>`;
+  st.innerHTML = stat("Analyzed", s.count, "CVs analyzed for this vacancy") + stat("Avg fit", s.avg_fit != null ? s.avg_fit + "/100" : null, "Average fit score")
+    + stat("Avg AI-score", s.avg_ai != null ? s.avg_ai + "%" : null, "Average AI-generated probability") + stat("Full coverage", s.skill_coverage != null ? s.skill_coverage + "%" : null, "Share of candidates with no missing skills");
+  const invited = new Map(INVITES.filter(i => i.vacancy_id === vid).map(i => [i.cv_id, i]));
+  const bestIdx = RESULTS.findIndex(x => x.status === "done");
+  $("invite-best-btn").classList.toggle("hidden", bestIdx < 0);
+  box.innerHTML = pendHtml + RESULTS.map((r, i) => {
+    const c = r.cv, best = i === bestIdx, inv = invited.get(c.id);
+    const invLabel = inv ? (inv.completed ? `✓ ${inv.decision || "done"}` : "✓ Invited") : "Invite";
+    return `<div class="rounded-xl p-3 border cursor-pointer hover:border-slate-600 transition-colors ${best ? "border-amber-500/70 bg-amber-950/20" : "border-slate-800 bg-slate-800/40"}" onclick="showCV(${c.id})">
+      <div class="flex items-center justify-between gap-3">
         <div class="flex items-center gap-2 min-w-0">
-          ${best ? '<span class="text-amber-400">🏆</span>' : `<span class="text-slate-600 text-xs">#${i + 1}</span>`}
+          <span class="w-6 text-center shrink-0">${best ? "🏆" : `<span class="text-slate-500 text-xs">#${i + 1}</span>`}</span>
           <span class="font-medium truncate">${esc(c.name)}</span>
-          <span class="${aiCls} text-xs">AI ${c.ai_score ?? "?"}</span>
+          <span class="${aiCls(c.ai_score)} text-[11px] shrink-0" title="AI-generated probability">AI ${c.ai_score ?? "?"}%</span>
+          ${c.footprint && c.footprint.consistent === false ? '<span class="text-[11px] text-amber-400 shrink-0" title="Footprint inconsistent with CV">⚠ footprint</span>' : ""}
         </div>
         <div class="flex items-center gap-2 shrink-0">
-          <span class="font-bold ${r.status === "done" ? "text-indigo-300" : "text-slate-500"}">${r.status === "done" ? r.fit_score + "/100" : r.status}</span>
-          <button onclick="inviteCV(${c.id})" class="text-xs px-2 py-1 rounded bg-emerald-700 hover:bg-emerald-600">Invite</button>
+          ${r.status === "done" ? `<div class="w-24 hidden sm:block"><div class="bar"><i class="${fitColor(r.fit_score)}" style="width:${r.fit_score}%"></i></div></div><span class="font-bold text-indigo-300 w-14 text-right">${r.fit_score}/100</span>` : `<span class="text-xs text-red-400">${esc(r.status)}</span>`}
+          <button onclick="event.stopPropagation();inviteCV(${c.id})" class="text-xs px-2 py-1 rounded ${inv ? "bg-slate-700 hover:bg-slate-600" : "bg-emerald-700 hover:bg-emerald-600"}">${invLabel}</button>
         </div>
       </div>
-      ${r.status === "done" ? `<div class="text-xs text-slate-400 mt-1">${esc(r.summary || "")}</div>
-      <div class="text-xs mt-1"><span class="text-emerald-400">+ ${(r.strengths || []).slice(0, 3).map(esc).join("; ")}</span></div>
-      ${r.missing_skills && r.missing_skills.length ? `<div class="text-xs text-red-400 mt-0.5">missing: ${esc(r.missing_skills.join(", "))}</div>` : ""}` : ""}
+      ${r.status === "done" ? `<div class="text-xs text-slate-400 mt-1.5 line-clamp-2">${esc(r.summary || "")}</div>
+      ${r.missing_skills && r.missing_skills.length ? `<div class="text-[11px] text-red-400/90 mt-1 truncate">missing: ${esc(r.missing_skills.join(", "))}</div>` : '<div class="text-[11px] text-emerald-400/90 mt-1">all key requirements covered</div>'}` : ""}
     </div>`;
   }).join("");
 }
 
 /* ---------- invites & reports ---------- */
-let REPORTS = {};
-let INVITE_FILTER = "all";
-
 const STATUS_META = {
-  pending:    { label: "⏳ Pending",   cls: "bg-slate-700 text-slate-300" },
+  pending: { label: "⏳ Pending", cls: "bg-slate-700 text-slate-300" },
   inprogress: { label: "🎙 In progress", cls: "bg-indigo-900 text-indigo-300" },
-  HIRE:       { label: "✅ HIRE",     cls: "bg-emerald-900 text-emerald-400" },
-  CONSIDER:   { label: "⚠ CONSIDER", cls: "bg-amber-900 text-amber-400" },
-  REJECT:     { label: "❌ REJECT",   cls: "bg-red-900 text-red-400" },
+  HIRE: { label: "✅ HIRE", cls: "bg-emerald-900 text-emerald-400" },
+  CONSIDER: { label: "⚠ CONSIDER", cls: "bg-amber-900 text-amber-400" },
+  REJECT: { label: "❌ REJECT", cls: "bg-red-900 text-red-400" },
 };
-
 function inviteStatus(inv) {
   if (inv.completed) return inv.decision || "CONSIDER";
-  return inv.report_id ? "inprogress" : "pending";
+  return inv.answered > 0 || inv.live ? "inprogress" : "pending";
 }
 
-async function loadInvites() {
-  const invites = await api("/api/invites");
-  const reports = await api("/api/reports");
-  REPORTS = {};
-  reports.forEach(r => REPORTS[r.id] = r);
-  // status chips with counts
-  const counts = { all: invites.length, pending: 0, inprogress: 0, HIRE: 0, CONSIDER: 0, REJECT: 0 };
-  invites.forEach(i => counts[inviteStatus(i)]++);
-  document.getElementById("invite-stats").innerHTML = Object.entries(counts).map(([k, n]) => {
-    const meta = k === "all" ? { label: `All (${n})`, cls: "bg-slate-800 text-slate-200" } : STATUS_META[k];
-    const active = INVITE_FILTER === k ? "ring-2 ring-indigo-400" : "opacity-70";
-    return `<button onclick="INVITE_FILTER='${k}';loadInvites()" class="px-2 py-1 rounded-lg ${meta.cls} ${active}">${meta.label}${k !== "all" ? ` · ${n}` : ""}</button>`;
+async function loadInvites(silent = false) {
+  try {
+    const [invites, reports] = await Promise.all([api("/api/invites", { silent }), api("/api/reports", { silent })]);
+    INVITES = invites;
+    REPORTS = {}; reports.forEach(r => REPORTS[r.id] = r);
+  } catch { return; }
+  renderInvites(); renderKPIs();
+}
+
+function setInviteFilter(k) { INVITE_FILTER = k; renderInvites(); }
+
+function renderInvites() {
+  const counts = { all: INVITES.length, pending: 0, inprogress: 0, HIRE: 0, CONSIDER: 0, REJECT: 0 };
+  INVITES.forEach(i => counts[inviteStatus(i)]++);
+  $("invite-stats").innerHTML = Object.entries(counts).map(([k, n]) => {
+    const meta = k === "all" ? { label: "All", cls: "bg-slate-800 text-slate-200" } : STATUS_META[k];
+    return `<button onclick="setInviteFilter('${k}')" class="px-2 py-1 rounded-lg ${meta.cls} ${INVITE_FILTER === k ? "ring-2 ring-indigo-400" : "opacity-70 hover:opacity-100"}">${meta.label} · ${n}</button>`;
   }).join("");
-  const shown = invites.filter(i => INVITE_FILTER === "all" || inviteStatus(i) === INVITE_FILTER);
-  const box = document.getElementById("invite-list");
-  let html = "";
-  for (const inv of shown) {
+  const shown = INVITES.filter(i => INVITE_FILTER === "all" || inviteStatus(i) === INVITE_FILTER);
+  $("invite-list").innerHTML = shown.map(inv => {
     const st = STATUS_META[inviteStatus(inv)];
-    const rep = reports.find(r => r.id === inv.report_id);
-    html += `<div class="bg-slate-800/50 rounded-lg p-2.5">
+    const rep = REPORTS[inv.report_id];
+    return `<div class="bg-slate-800/50 rounded-lg p-2.5 border ${inv.live ? "border-emerald-700" : "border-transparent"}">
       <div class="flex items-center justify-between gap-2">
         <span class="font-medium truncate">${esc(inv.candidate)}</span>
-        <span class="text-xs px-1.5 py-0.5 rounded shrink-0 ${st.cls}">${st.label}${inv.completed ? " · " + (inv.score ?? "?") + "/10" : ""}</span>
+        <span class="text-[11px] px-1.5 py-0.5 rounded shrink-0 ${st.cls}">${st.label}${inv.completed && inv.score != null ? " · " + inv.score + "/10" : ""}</span>
       </div>
-      <div class="flex items-center gap-2 mt-1">
-        <input readonly value="${inv.link}" class="flex-1 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-[10px] text-slate-400">
-        <button onclick="copyText('${inv.link}')" class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600">Copy</button>
-      </div>
-      ${rep ? `<button onclick="showReport(${rep.id})" class="mt-1 text-xs text-indigo-400 underline">View report & transcript</button>` : ""}
-      <div class="flex gap-1.5 mt-1.5">
-        ${!inv.completed ? `<button onclick="connectLive('${inv.token}', ${inv.id})" class="text-xs px-2 py-1 rounded ${inv.live ? "bg-emerald-700 hover:bg-emerald-600 animate-pulse" : "bg-slate-700 hover:bg-slate-600"}">👁 Connect${inv.live ? " · LIVE" : ""}</button>
-        <button onclick="stopInterview('${inv.token}')" class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-red-700">⏹ Stop</button>` : ""}
+      <div class="text-[11px] text-slate-500 mt-0.5">${esc(inv.vacancy)} · ${fmtDate(inv.created_at)}${!inv.completed && inv.answered ? ` · answered ${inv.answered}` : ""}</div>
+      <div class="flex flex-wrap gap-1.5 mt-1.5">
+        ${!inv.completed ? `<button onclick="copyText('${esc(inv.link)}')" class="text-[11px] px-2 py-1 rounded bg-slate-700 hover:bg-slate-600">🔗 Copy link</button>
+          <button onclick="connectLive('${esc(inv.token)}')" class="text-[11px] px-2 py-1 rounded ${inv.live ? "bg-emerald-700 hover:bg-emerald-600 animate-pulse" : "bg-slate-700 hover:bg-slate-600"}">👁 ${inv.live ? "LIVE" : "Watch"}</button>
+          ${inv.answered || inv.live ? `<button onclick="stopInterview('${esc(inv.token)}')" class="text-[11px] px-2 py-1 rounded bg-slate-700 hover:bg-red-700">⏹ Stop</button>` : `<button onclick="delInvite(${inv.id})" class="text-[11px] px-2 py-1 rounded bg-slate-700 hover:bg-red-700">✕ Revoke</button>`}` : ""}
+        ${rep && inv.completed ? `<button onclick="showReport(${rep.id})" class="text-[11px] px-2 py-1 rounded bg-indigo-700 hover:bg-indigo-600">📋 Report${rep.video ? " · 🎥" : ""}</button>` : ""}
       </div>
     </div>`;
-  }
-  box.innerHTML = html || '<p class="text-slate-500">No interviews in this status yet.</p>';
+  }).join("") || '<p class="text-slate-500 text-sm text-center py-6">No interviews here yet.<br><span class="text-xs">Invite candidates from the ranking.</span></p>';
+}
+
+async function delInvite(id) {
+  if (!confirm("Revoke this invite? The link will stop working.")) return;
+  await api(`/api/invites/${id}`, { method: "DELETE" });
+  loadInvites();
 }
 
 async function stopInterview(token) {
   if (!confirm("Stop this interview? Partial answers will be scored into a report.")) return;
   try {
     const res = await api(`/api/interview/${token}/stop`, { method: "POST" });
-    toast(res.already_done ? "Interview was already finished" : `Interview stopped — decision: ${res.decision}, score ${res.score}/10`, "ok");
+    toast(res.already_done ? "Interview was already finished" : `Interview stopped — ${res.decision}, ${res.score}/10`, "ok");
   } catch {}
   loadInvites();
 }
 
 let LIVE_TIMER = null;
-function connectLive(token, iid) {
+function connectLive(token) {
   modalHtml(`<h3 class="font-semibold text-lg mb-1">👁 Live interview</h3>
     <div id="live-info" class="text-sm text-slate-400 mb-2">Connecting…</div>
     <div id="live-frame" class="w-full aspect-video bg-black rounded-xl border border-slate-700 flex items-center justify-center text-slate-500 text-sm mb-2">waiting for candidate's camera…</div>
-    <p class="text-xs text-slate-500">Live snapshot updates every ~5 seconds (candidate's camera frame). Use ⏹ Stop on the interview card to terminate it.</p>
-    <div class="text-right mt-3"><button onclick="LIVE_TIMER&&clearInterval(LIVE_TIMER);document.getElementById('info-modal').remove()" class="px-4 py-1.5 rounded-lg bg-slate-800 text-sm">Close</button></div>`);
+    <div class="flex items-center justify-between"><p class="text-xs text-slate-500">Snapshot from the candidate's camera, refreshed every ~5 s.</p>
+    <button onclick="stopInterview('${esc(token)}')" class="text-xs px-3 py-1.5 rounded-lg bg-red-800 hover:bg-red-700">⏹ Stop interview</button></div>`);
   const poll = async () => {
     let d;
-    try { d = await api(`/api/interview/${token}/live`); } catch { return; }
-    const box = document.getElementById("live-info");
-    if (!box) { clearInterval(LIVE_TIMER); return; }
+    try { d = await api(`/api/interview/${token}/live`, { silent: true }); } catch { return; }
+    const box = $("live-info");
+    if (!box) { clearInterval(LIVE_TIMER); LIVE_TIMER = null; return; }
     if (d.completed) {
-      box.innerHTML = `<span class="text-emerald-400">Interview finished — candidate: ${esc(d.candidate)}, answered ${d.answered}/${d.questions}.</span>`;
-      document.getElementById("live-frame").innerHTML = '<span class="text-slate-500 text-sm">stream ended</span>';
-      clearInterval(LIVE_TIMER); LIVE_TIMER = null;
-      loadInvites();
+      box.innerHTML = `<span class="text-emerald-400">Interview finished — ${esc(d.candidate)} answered ${d.answered}/${d.questions}.</span>`;
+      $("live-frame").innerHTML = '<span class="text-slate-500 text-sm">stream ended</span>';
+      clearInterval(LIVE_TIMER); LIVE_TIMER = null; loadInvites();
       return;
     }
-    box.innerHTML = `${esc(d.candidate)} · ${esc(d.vacancy)} — answered <b class="text-indigo-300">${d.answered}/${d.questions}</b>`;
-    const img = document.getElementById("live-frame");
-    if (d.frame) img.innerHTML = `<img src="${d.frame}" class="w-full h-full object-cover rounded-xl">`;
+    box.innerHTML = `${esc(d.candidate)} · ${esc(d.vacancy)} — answered <b class="text-indigo-300">${d.answered}/${d.questions || "?"}</b>`;
+    const img = $("live-frame");
+    if (d.frame) { img.innerHTML = `<img src="${esc(d.frame)}" class="w-full h-full object-cover rounded-xl">`; img.dataset.hadFrame = "1"; }
     else if (img.dataset.hadFrame !== "1") img.innerHTML = '<span class="text-slate-500 text-sm">candidate camera not visible yet…</span>';
-    if (d.frame) img.dataset.hadFrame = "1";
   };
-  if (LIVE_TIMER) clearInterval(LIVE_TIMER);
   poll();
   LIVE_TIMER = setInterval(poll, 2500);
 }
@@ -379,115 +512,158 @@ async function showVideos() {
   try { vids = await api("/api/recordings"); } catch { return; }
   const items = vids.map(v => `
     <div class="bg-slate-800/50 rounded-xl p-3">
-      <video src="${v.url}" controls preload="none" class="w-full rounded-lg bg-black max-h-48"></video>
+      <video src="${esc(v.url)}" controls preload="metadata" class="w-full rounded-lg bg-black max-h-56"></video>
       <div class="flex items-center justify-between mt-2 gap-2">
         <div class="min-w-0">
           <div class="text-sm font-medium truncate">${esc(v.candidate)} <span class="text-slate-500 text-xs">· ${esc(v.vacancy)}</span></div>
-          <div class="text-xs text-slate-500">${v.date} · ${v.size_kb} KB${v.decision ? ` · <b>${esc(v.decision)}</b> ${v.score ?? "?"}/10` : ""}</div>
+          <div class="text-xs text-slate-500">${esc(v.date)} · ${v.size_kb} KB${v.decision ? ` · <b>${esc(v.decision)}</b> ${v.score ?? "?"}/10` : ""}</div>
         </div>
-        <button onclick="confirmDeleteVideo('${v.file}')" class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-red-700 shrink-0">🗑</button>
+        <button onclick="confirmDeleteVideo('${esc(v.file)}')" class="text-xs px-2 py-1 rounded bg-slate-700 hover:bg-red-700 shrink-0">🗑</button>
       </div>
     </div>`).join("");
   modalHtml(`<h3 class="font-semibold text-lg mb-3">🎥 Interview recordings</h3>
-    ${items || '<p class="text-slate-500 text-sm">No recordings yet. Videos appear here after candidates finish their interviews.</p>'}`);
+    <div class="grid sm:grid-cols-2 gap-3">${items}</div>${items ? "" : '<p class="text-slate-500 text-sm">No recordings yet. Videos appear after candidates finish their interviews.</p>'}`, true);
 }
 
 async function confirmDeleteVideo(file) {
   if (!confirm("Delete this recording?")) return;
-  await api(`/api/recordings/${file}`, { method: "DELETE" });
+  await api(`/api/recordings/${encodeURIComponent(file)}`, { method: "DELETE" });
   showVideos();
 }
 
 function showReport(id) {
   const r = REPORTS[id];
   if (!r) return;
-  modalHtml(`<h3 class="font-semibold text-lg mb-1">Interview report — ${esc(r.candidate)} <span class="text-sm text-slate-400">(${esc(r.vacancy)})</span></h3>
-    <div class="mb-2"><span class="font-bold text-indigo-300">${r.total_score}/10</span>
-      <span class="ml-2 px-2 py-0.5 rounded text-xs ${r.decision === "HIRE" ? "bg-emerald-900 text-emerald-400" : r.decision === "REJECT" ? "bg-red-900 text-red-400" : "bg-amber-900 text-amber-400"}">${r.decision}</span></div>
-    <p class="text-sm text-slate-300 mb-2">${esc(r.justification)}</p>
-    <div class="text-xs text-slate-400 mb-2"><b>Strengths:</b> ${(r.strengths || []).map(esc).join("; ")}<br><b>Weaknesses:</b> ${(r.weaknesses || []).map(esc).join("; ")}</div>
-    <div class="text-xs text-slate-400 mb-2"><b>Areas:</b> ${(r.areas || []).map(esc).join(", ")}</div>
-    ${r.video ? `<div class="mb-3"><b class="text-xs">🎥 Video recording:</b><video src="${r.video}" controls class="w-full mt-1 rounded-lg border border-slate-700 max-h-64"></video></div>` : ""}
-    <div class="max-h-64 overflow-y-auto space-y-2 mt-3 border-t border-slate-700 pt-3">
-      ${(r.transcript || []).map(t => `<div class="text-sm bg-slate-800/60 rounded-lg p-2">
-        <div class="text-slate-300"><b>Q:</b> ${esc(t.q)}</div>
-        <div class="text-slate-400 mt-0.5"><b>A:</b> ${esc(t.a)}</div>
-        <div class="mt-1 text-xs ${t.score >= 7 ? "text-emerald-400" : t.score >= 5 ? "text-amber-400" : "text-red-400"}">Score: ${t.score}/10 — ${esc(t.feedback || "")}</div>
-      </div>`).join("")}
-    </div>`);
+  const dcls = r.decision === "HIRE" ? "bg-emerald-900 text-emerald-400" : r.decision === "REJECT" ? "bg-red-900 text-red-400" : "bg-amber-900 text-amber-400";
+  modalHtml(`<div class="flex items-start justify-between gap-3 mb-3">
+      <div><h3 class="font-semibold text-lg">${esc(r.candidate)}</h3><div class="text-sm text-slate-400">${esc(r.vacancy)} · interview report</div></div>
+      <div class="text-right shrink-0"><div class="text-2xl font-bold ${scoreCls(r.total_score)}">${r.total_score}/10</div><span class="px-2 py-0.5 rounded text-xs font-semibold ${dcls}">${esc(r.decision || "—")}</span></div>
+    </div>
+    <p class="text-sm text-slate-300 mb-3 p-3 rounded-lg bg-slate-800/50">${esc(r.justification)}</p>
+    <div class="grid sm:grid-cols-3 gap-3 text-xs mb-3">
+      <div><div class="text-emerald-400 font-semibold mb-1">Strengths</div>${list(r.strengths, "text-slate-400")}</div>
+      <div><div class="text-amber-400 font-semibold mb-1">Weaknesses</div>${list(r.weaknesses, "text-slate-400")}</div>
+      <div><div class="text-indigo-300 font-semibold mb-1">Knowledge areas</div>${list(r.areas, "text-slate-400")}</div>
+    </div>
+    ${r.video ? `<div class="mb-3"><div class="text-xs font-semibold mb-1">🎥 Recording</div><video src="${esc(r.video)}" controls preload="metadata" class="w-full rounded-lg border border-slate-700 max-h-72 bg-black"></video></div>` : ""}
+    <div class="text-xs font-semibold mb-2 border-t border-slate-700 pt-3">Transcript</div>
+    <div class="space-y-2">
+      ${(r.transcript || []).map((t, i) => `<div class="text-sm bg-slate-800/60 rounded-lg p-3 ${t.followup_of != null ? "ml-6 border-l-2 border-amber-700" : ""}">
+        <div class="flex justify-between gap-2"><div class="text-slate-200"><b>${t.followup_of != null ? "Follow-up" : "Q" + (i + 1)}:</b> ${esc(t.q)}</div><span class="font-bold shrink-0 ${scoreCls(t.score)}">${t.score}/10</span></div>
+        <div class="text-slate-400 mt-1"><b>A:</b> ${esc(t.a)}</div>
+        <div class="mt-1 text-xs text-slate-500 italic">${esc(t.feedback || "")}</div>
+      </div>`).join("") || '<p class="text-slate-500 text-sm">No answers were given.</p>'}
+    </div>`, true);
 }
 
 /* ---------- chat ---------- */
-function renderChat(log, busy) {
-  const box = document.getElementById("chat-log");
-  if (!log.length && !busy) box.innerHTML = `<div class="text-slate-500 text-xs leading-relaxed">Hi! I'm your HR assistant. Ask me anything ("what strengths should a programmer have?") or give explicit commands ("start analysis for the Python Developer vacancy and invite the best candidate").</div>`;
-  box.innerHTML = log.map(m => m.role === "user"
-    ? `<div class="flex justify-end"><div class="bg-indigo-700/70 rounded-2xl rounded-br-sm px-4 py-2 max-w-[85%]">${esc(m.text)}</div></div>`
-    : `<div class="flex justify-start"><div class="bg-slate-800 rounded-2xl rounded-bl-sm px-4 py-2 max-w-[85%] whitespace-pre-wrap">${m.text}</div></div>`
-  ).join("") + (busy ? `<div class="flex justify-start"><div class="bg-slate-800 rounded-2xl px-4 py-2 text-slate-400 text-xs"><span class="spin inline-block">⚙</span> thinking…</div></div>` : "");
+let CHAT_LOG = [], CHAT_BUSY = false;
+const CHIPS = [
+  "Who is the best candidate for this vacancy?",
+  "Run analysis for this vacancy and invite the best candidate",
+  "List all Programmer candidates",
+  "Show the report",
+  "Which CVs look AI-generated?",
+  "What should I ask a Sales Manager in an interview?",
+];
+function renderChips() {
+  $("chat-chips").innerHTML = CHIPS.map((c, i) => `<button type="button" class="chip" onclick="useChip(${i})">${esc(c)}</button>`).join("");
+}
+function useChip(i) { $("chat-input").value = CHIPS[i]; sendChat(); }
+function clearChat() { CHAT_LOG = []; renderChat(); }
+function pushAI(html) { CHAT_LOG.push({ role: "ai", html, plain: html.replace(/<[^>]+>/g, "") }); renderChat(); }
+
+function renderChat() {
+  const box = $("chat-log");
+  if (!CHAT_LOG.length && !CHAT_BUSY) {
+    box.innerHTML = `<div class="text-slate-500 text-xs leading-relaxed p-3 rounded-lg bg-slate-800/30">👋 I'm your HR assistant. I know your vacancies, CVs, fit scores and interview results.<br>
+      Ask questions (“who fits best for Python Developer?”) or give explicit commands (“run analysis for Python Developer and invite the best candidate”). I reply in your language.</div>`;
+    return;
+  }
+  box.innerHTML = CHAT_LOG.map(m => m.role === "user"
+    ? `<div class="flex justify-end"><div class="bg-indigo-700/70 rounded-2xl rounded-br-sm px-4 py-2 max-w-[85%] whitespace-pre-wrap">${esc(m.text)}</div></div>`
+    : `<div class="flex justify-start"><div class="bg-slate-800 rounded-2xl rounded-bl-sm px-4 py-2 max-w-[85%] whitespace-pre-wrap">${m.html}</div></div>`
+  ).join("") + (CHAT_BUSY ? `<div class="flex justify-start"><div class="bg-slate-800 rounded-2xl px-4 py-2 text-slate-400 text-xs"><span class="spin">⚙</span> thinking…</div></div>` : "");
   box.scrollTop = box.scrollHeight;
 }
 
-const CHAT_LOG = [];
 async function sendChat() {
-  const inp = document.getElementById("chat-input");
+  const inp = $("chat-input");
   const msg = inp.value.trim();
-  if (!msg) return;
+  if (!msg || CHAT_BUSY) return;
   inp.value = "";
+  const history = CHAT_LOG.slice(-8).map(m => ({ role: m.role === "user" ? "user" : "assistant", content: m.role === "user" ? m.text : m.plain }));
   CHAT_LOG.push({ role: "user", text: msg });
-  renderChat(CHAT_LOG, true);
+  CHAT_BUSY = true; $("chat-send").disabled = true; renderChat();
   try {
-    const res = await api("/api/chat", { method: "POST", body: { message: msg, vacancy_id: SEL_VAC } });
-    let text = res.reply || "(no reply)";
+    const res = await api("/api/chat", { method: "POST", body: { message: msg, vacancy_id: SEL_VAC, history } });
+    let html = esc(res.reply || "(no reply)");
     for (const ex of res.executed || []) {
-      text += `\n\n✅ <b class="text-emerald-400">Executed: ${esc(ex.action)}</b>\n${esc(ex.text).replace(/(https?:\/\/[^\s]+)/g, '<span class="text-indigo-300">$1</span>')}`;
-      if (ex.link) text += ` <button onclick="copyText('${ex.link}')" class="underline text-xs">copy link</button>`;
+      html += `\n\n<span class="text-emerald-400 font-semibold">⚡ ${esc(ex.action.replace(/_/g, " "))}</span>\n${esc(ex.text).replace(/(https?:\/\/[^\s]+)/g, '<span class="text-indigo-300 break-all">$1</span>')}`;
+      if (ex.link) html += ` <button onclick="copyText('${esc(ex.link)}')" class="underline text-xs text-slate-400">copy link</button>`;
     }
-    if (!(res.executed || []).length && res.intent === "chat") text += `\n<span class="text-[10px] text-slate-500">chat only — no action executed</span>`;
-    CHAT_LOG.push({ role: "ai", text });
-    renderChat(CHAT_LOG, false);
-    if (res.run_id) { pollProgress(res.run_id); }
-    loadCVs();
-  } catch { renderChat(CHAT_LOG, false); }
+    if (!(res.executed || []).length && res.intent === "chat") html += `\n<span class="text-[10px] text-slate-500">💬 answer only — no action executed</span>`;
+    CHAT_BUSY = false;
+    CHAT_LOG.push({ role: "ai", html, plain: [res.reply, ...(res.executed || []).map(e => `[executed ${e.action}] ${e.text}`)].join("\n") });
+    renderChat();
+    const ran = (res.executed || []).find(e => e.action === "run_analysis");
+    if (res.run_id) {
+      const vMatch = VACS.find(v => ran && ran.text.includes(`'${v.title}'`));
+      if (vMatch && vMatch.id !== SEL_VAC) await selectVac(vMatch.id);
+      pollProgress(res.run_id, SEL_VAC);
+    }
+    if ((res.executed || []).some(e => e.link)) loadInvites();
+  } catch { CHAT_BUSY = false; renderChat(); }
+  $("chat-send").disabled = false;
+  inp.focus();
 }
 
 /* ---------- candidate ---------- */
+let APPLY_VAC = null;
 async function initCandidate() {
-  document.getElementById("cand-view").classList.remove("hidden");
-  const sel = document.getElementById("apply-vac");
-  sel.innerHTML = VACS.filter(v => v.active).map(v => `<option value="${v.id}">${esc(v.title)} (${v.category})</option>`).join("");
-  const invites = await api("/api/my/invites").catch(() => []);
-  document.getElementById("my-invites").innerHTML = invites.length
-    ? invites.map(i => `<div class="bg-slate-800/50 rounded-lg p-2.5 flex items-center gap-2"><span class="truncate flex-1 text-xs">${i.link}</span><button onclick="copyText('${i.link}')" class="text-xs px-2 py-1 rounded bg-slate-700">Copy</button>${i.completed ? '<span class="text-xs text-emerald-400">completed</span>' : '<a href="' + i.link + '" class="text-xs px-2 py-1 rounded bg-indigo-600">Open</a>'}</div>`).join("")
-    : '<p class="text-slate-500 text-sm">No invites yet.</p>';
+  $("cand-view").classList.remove("hidden");
+  const open = VACS.filter(v => v.active);
+  APPLY_VAC = open[0] ? open[0].id : null;
+  renderCandVacs();
+  $("apply-file").addEventListener("change", (e) => { $("apply-file-name").textContent = e.target.files[0] ? e.target.files[0].name : "Choose CV file…"; });
+  loadCandidateData();
+}
+
+function renderCandVacs() {
+  const open = VACS.filter(v => v.active);
+  $("cand-vacs").innerHTML = open.map(v => `<button onclick="APPLY_VAC=${v.id};renderCandVacs()" class="text-left rounded-xl p-3 border transition-colors ${v.id === APPLY_VAC ? "border-indigo-500 bg-indigo-950/40" : "border-slate-800 bg-slate-800/40 hover:bg-slate-800"}">
+    <div class="font-medium text-sm">${esc(v.title)}</div><div class="text-xs text-slate-500 mb-1">${esc(v.category)}</div>
+    <div class="text-xs text-slate-400 line-clamp-2">${esc(v.description)}</div></button>`).join("") || '<p class="text-slate-500 text-sm">No open vacancies right now.</p>';
+}
+
+async function loadCandidateData() {
+  const [apps, invites] = await Promise.all([api("/api/my/applications").catch(() => []), api("/api/my/invites").catch(() => [])]);
+  $("my-apps").innerHTML = apps.map(a => `<div class="bg-slate-800/50 rounded-lg p-3 flex items-center justify-between gap-2">
+      <div class="min-w-0"><div class="font-medium truncate">${esc(a.vacancy)}</div><div class="text-xs text-slate-500 truncate">${esc(a.filename)} · ${fmtDate(a.created_at)}</div></div>
+      <span class="text-xs px-2 py-0.5 rounded shrink-0 ${a.status.startsWith("Invited") ? "bg-indigo-900 text-indigo-300" : a.status.startsWith("Interview") ? "bg-emerald-900 text-emerald-400" : "bg-slate-700 text-slate-300"}">${esc(a.status)}</span>
+    </div>`).join("") || '<p class="text-slate-500 text-sm">No applications yet.</p>';
+  $("my-invites").innerHTML = invites.map(i => `<div class="bg-slate-800/50 rounded-lg p-3 flex items-center gap-2">
+      <div class="flex-1 min-w-0"><div class="font-medium">${esc(i.vacancy)}</div><div class="text-xs text-slate-500 truncate">${esc(i.link)}</div></div>
+      ${i.completed ? '<span class="text-xs text-emerald-400">✓ completed</span>' : `<a href="${esc(i.link)}" class="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 font-medium">▶ Start interview</a>`}
+    </div>`).join("") || '<p class="text-slate-500 text-sm">No invites yet — you will see interview links here once a recruiter invites you.</p>';
 }
 
 async function applyJob() {
-  const f = document.getElementById("apply-file").files[0];
-  if (!f) return toast("Choose a file", "error");
-  const st = document.getElementById("apply-status");
-  st.innerHTML = '<span class="spin inline-block">⚙</span> Uploading & parsing…';
+  const f = $("apply-file").files[0];
+  if (!APPLY_VAC) return toast("Choose a vacancy", "error");
+  if (!f) return toast("Choose a CV file", "error");
+  const st = $("apply-status");
+  $("apply-btn").disabled = true;
+  st.innerHTML = '<span class="spin">⚙</span> Uploading & parsing your CV…';
   const fd = new FormData();
-  fd.append("vacancy_id", document.getElementById("apply-vac").value);
+  fd.append("vacancy_id", APPLY_VAC);
   fd.append("file", f);
-  const r = await fetch("/api/apply", { method: "POST", body: fd });
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) { st.innerHTML = ""; return toast(data.detail || "Upload failed", "error"); }
-  st.innerHTML = `<span class="text-emerald-400">✓ Application submitted — parsed as ${data.cv.category}. The team will review it.</span>`;
-  toast("Application submitted", "ok");
+  try {
+    const data = await api("/api/apply", { method: "POST", body: fd });
+    st.innerHTML = `<span class="text-emerald-400">✓ Application for “${esc(data.vacancy)}” submitted. The recruiting team will review it.</span>`;
+    toast("Application submitted", "ok");
+    $("apply-file").value = ""; $("apply-file-name").textContent = "Choose CV file…";
+    loadCandidateData();
+  } catch { st.innerHTML = ""; }
+  $("apply-btn").disabled = false;
 }
-
-/* ---------- modal helper ---------- */
-function modalHtml(html) {
-  let m = document.getElementById("info-modal");
-  if (m) m.remove();
-  m = document.createElement("div");
-  m.id = "info-modal";
-  m.className = "fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4";
-  m.onclick = (e) => { if (e.target === m) m.remove(); };
-  m.innerHTML = `<div class="bg-slate-900 border border-slate-700 rounded-2xl p-6 max-w-lg w-full max-h-[85vh] overflow-y-auto">${html}
-    <div class="text-right mt-3"><button onclick="document.getElementById('info-modal').remove()" class="px-4 py-1.5 rounded-lg bg-slate-800 text-sm">Close</button></div></div>`;
-  document.body.appendChild(m);
-}
-
-function esc(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }

@@ -55,6 +55,8 @@ class CV(SQLModel, table=True):
     ai_verdict: str = ""
     ai_evidence: str = "[]"           # JSON list
     github: str = ""                  # JSON footprint summary
+    vacancy_id: int | None = None     # vacancy the candidate applied to (self-applied CVs)
+    file_path: str = ""               # original uploaded file (uploads/), used for image metadata scan
     created_at: str = Field(default_factory=now)
 
     def skills_list(self):
@@ -142,12 +144,17 @@ def get_session():
 
 def init_db(seed=True):
     SQLModel.metadata.create_all(engine)
-    # tiny migration for DBs created before the video_path column existed
+    # tiny migrations for DBs created before newer columns existed
     with engine.begin() as conn:
         from sqlalchemy import text
-        cols = [r[1] for r in conn.execute(text("PRAGMA table_info(interviewreport)"))]
-        if "video_path" not in cols:
-            conn.execute(text("ALTER TABLE interviewreport ADD COLUMN video_path VARCHAR DEFAULT ''"))
+        for table, col, ddl in [
+            ("interviewreport", "video_path", "VARCHAR DEFAULT ''"),
+            ("cv", "vacancy_id", "INTEGER"),
+            ("cv", "file_path", "VARCHAR DEFAULT ''"),
+        ]:
+            cols = [r[1] for r in conn.execute(text(f"PRAGMA table_info({table})"))]
+            if col not in cols:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}"))
     if not seed:
         return
     with Session(engine) as s:

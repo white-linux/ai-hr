@@ -23,10 +23,13 @@ from models import (CATEGORIES, Analysis, CV, InterviewReport, Invite, User,
                     init_db, now, verify_password)
 
 app = FastAPI(title="AI Recruiter")
-SECRET = "hr-demo-secret-2026"
+SECRET = os.environ.get("HR_SECRET", "hr-demo-secret-2026")
 COOKIE = "session"
 RECORDINGS_DIR = os.path.join(os.path.dirname(__file__), "recordings")
 os.makedirs(RECORDINGS_DIR, exist_ok=True)
+UPLOADS_DIR = analysis.UPLOADS_DIR
+os.makedirs(UPLOADS_DIR, exist_ok=True)
+LANGS = {"en": "English", "ru": "Russian", "az": "Azerbaijani"}
 
 # ---------------- helpers ----------------
 def make_token(user: User):
@@ -64,6 +67,16 @@ def base_url(request: Request):
     return str(request.base_url).rstrip("/")
 
 
+def _footprint_json(cv: CV):
+    try:
+        raw = json.loads(cv.github) if cv.github else None
+    except Exception:
+        return None
+    if not isinstance(raw, dict) or "summary" not in raw:
+        return None
+    return {"summary": raw.get("summary", ""), "consistent": raw.get("consistent"), "links": raw.get("links", [])}
+
+
 def cv_json(cv: CV):
     return {
         "id": cv.id, "filename": cv.filename, "category": cv.category,
@@ -71,6 +84,8 @@ def cv_json(cv: CV):
         "years_exp": cv.years_exp, "links": cv.links_list(),
         "ai_score": cv.ai_score, "ai_verdict": cv.ai_verdict, "ai_evidence": cv.evidence_list(),
         "github": (lambda raw: raw.get("github") if isinstance(raw, dict) and "github" in raw else raw)(json.loads(cv.github)) if cv.github else None,
+        "footprint": _footprint_json(cv),
+        "vacancy_id": cv.vacancy_id, "owner_id": cv.owner_id,
         "created_at": cv.created_at,
     }
 
@@ -123,13 +138,18 @@ def parse_cv_text(text: str) -> dict:
     return out
 
 
-def store_cv(s, filename, text, owner_id=None):
+def store_cv(s, filename, text, owner_id=None, data: bytes = None, vacancy_id=None):
     meta = parse_cv_text(text)
-    cv = CV(filename=filename, text=text, owner_id=owner_id,
+    cv = CV(filename=filename, text=text, owner_id=owner_id, vacancy_id=vacancy_id,
             category=meta.get("category", "Other"),
             candidate_name=meta.get("name") or "",
             email=meta.get("email") or "",
-            years_experience=meta.get("years_experience") or 0)
+            years_exp=meta.get("years_experience") or 0)
+    if data:
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(filename))[-80:]
+        cv.file_path = f"{secrets.token_hex(6)}_{safe}"
+        with open(os.path.join(UPLOADS_DIR, cv.file_path), "wb") as fh:
+            fh.write(data)
     cv.skills = json.dumps(meta.get("skills", []))
     cv.links = json.dumps(meta.get("links", []))
     if not cv.candidate_name:
@@ -202,7 +222,7 @@ def upload_cvs(files: list[UploadFile] = File(...), u: User = Depends(require_ad
                 text = extract_text(f.filename, data)
                 if len(text.strip()) < 50:
                     raise ValueError("could not extract enough text")
-                cv = store_cv(s, f.filename, text)
+                cv = store_cv(s, f.filename, text, data=data)
                 out.append({"file": f.filename, "cv": cv_json(cv)})
             except Exception as e:
                 out.append({"file": f.filename, "error": str(e)[:150]})
@@ -212,12 +232,39 @@ def upload_cvs(files: list[UploadFile] = File(...), u: User = Depends(require_ad
 @app.post("/api/apply")
 def apply(vacancy_id: int = Form(...), file: UploadFile = File(...), u: User = Depends(current_user)):
     data = file.file.read()
-    text = extract_text(file.filename, data)
+    if len(data) > 10 * 1024 * 1024:
+        raise HTTPException(400, "File too large (>10MB)")
+    try:
+        text = extract_text(file.filename, data)
+    except Exception:
+        raise HTTPException(400, "Could not read this file — use PDF, DOCX or TXT")
     if len(text.strip()) < 50:
         raise HTTPException(400, "Could not extract text from file")
     with contextlib.closing(Session(engine)) as s:
-        cv = store_cv(s, file.filename, text, owner_id=u.id)
-        return {"ok": True, "cv": cv_json(cv)}
+        vac = s.get(Vacancy, vacancy_id)
+        if not vac or not vac.active:
+            raise HTTPException(404, "Vacancy not found or closed")
+        cv = store_cv(s, file.filename, text, owner_id=u.id, data=data, vacancy_id=vacancy_id)
+        if not cv.candidate_name or cv.candidate_name == os.path.splitext(file.filename)[0]:
+            cv.candidate_name = u.name
+        if not cv.email:
+            cv.email = u.email
+        s.add(cv); s.commit(); s.refresh(cv)
+        print(f"[apply] {u.email} applied to '{vac.title}' with CV #{cv.id}")
+        return {"ok": True, "cv": cv_json(cv), "vacancy": vac.title}
+
+
+@app.get("/api/my/applications")
+def my_applications(u: User = Depends(current_user)):
+    with contextlib.closing(Session(engine)) as s:
+        out = []
+        for cv in s.exec(select(CV).where(CV.owner_id == u.id).order_by(CV.id.desc())).all():
+            vac = s.get(Vacancy, cv.vacancy_id) if cv.vacancy_id else None
+            inv = s.exec(select(Invite).where(Invite.cv_id == cv.id)).first()
+            status = "Interview completed" if inv and inv.completed else ("Invited to interview" if inv else "Under review")
+            out.append({"cv_id": cv.id, "filename": cv.filename, "vacancy": vac.title if vac else "—",
+                        "category": cv.category, "status": status, "created_at": cv.created_at})
+        return out
 
 
 @app.get("/api/cvs")
@@ -234,6 +281,11 @@ def del_cv(cv_id: int, u: User = Depends(require_admin)):
     with contextlib.closing(Session(engine)) as s:
         cv = s.get(CV, cv_id)
         if cv:
+            for a in s.exec(select(Analysis).where(Analysis.cv_id == cv_id)).all():
+                s.delete(a)
+            if cv.file_path:
+                with contextlib.suppress(OSError):
+                    os.remove(os.path.join(UPLOADS_DIR, os.path.basename(cv.file_path)))
             s.delete(cv); s.commit()
     return {"ok": True}
 
@@ -299,14 +351,14 @@ def analyze(body: dict, u: User = Depends(require_admin)):
             cv_ids = [c.id for c in s.exec(select(CV).where(CV.category == vac.category)).all()]
         if not cv_ids:
             raise HTTPException(400, f"No CVs in category '{vac.category}'")
-    run_id = analysis.start_run(vid, cv_ids)
+    run_id = analysis.start_run(vid, cv_ids, force=bool(body.get("force")))
     return {"run_id": run_id, "cv_count": len(cv_ids)}
 
 
 @app.get("/api/analyze/progress/{run_id}")
 def progress(run_id: str, u: User = Depends(require_admin)):
     with analysis._lock:
-        return analysis.RUNS.get(run_id, {"finished": True})
+        return dict(analysis.RUNS.get(run_id, {"finished": True}))
 
 
 @app.get("/api/results/{vacancy_id}")
@@ -337,6 +389,21 @@ def results(vacancy_id: int, u: User = Depends(require_admin)):
 
 
 # ---------------- invites ----------------
+def make_invite(s, cv_id: int, vid: int, uid, base: str, lang: str = "en"):
+    """Create an interview invite, or reuse the open (not started, not completed) one for the same CV+vacancy."""
+    inv = s.exec(select(Invite).where(Invite.cv_id == cv_id, Invite.vacancy_id == vid,
+                                      Invite.completed == False, Invite.progress == 0)).first()  # noqa: E712
+    reused = bool(inv)
+    if not inv:
+        inv = Invite(token=secrets.token_urlsafe(16), cv_id=cv_id, vacancy_id=vid, created_by=uid,
+                     state=json.dumps({"lang": lang if lang in LANGS else "en"}))
+        s.add(inv); s.commit(); s.refresh(inv)
+    link = f"{base}/interview/{inv.token}"
+    cv = s.get(CV, cv_id)
+    print(f"[email-log] Interview invite to {cv.email if cv and cv.email else 'CV #' + str(cv_id)}: {link}")
+    return inv, link, reused
+
+
 @app.post("/api/invites")
 def create_invite(body: dict, request: Request, u: User = Depends(require_admin)):
     cv_id, vid = body.get("cv_id"), body.get("vacancy_id")
@@ -345,10 +412,19 @@ def create_invite(body: dict, request: Request, u: User = Depends(require_admin)
     with contextlib.closing(Session(engine)) as s:
         if not s.get(CV, cv_id) or not s.get(Vacancy, vid):
             raise HTTPException(404, "CV or vacancy not found")
-        inv = Invite(token=secrets.token_urlsafe(16), cv_id=cv_id, vacancy_id=vid, created_by=u.id)
-        s.add(inv); s.commit(); s.refresh(inv)
-        print(f"[email-log] Interview invite for CV #{cv_id}: {base_url(request)}/interview/{inv.token}")
-        return {"id": inv.id, "token": inv.token, "link": f"{base_url(request)}/interview/{inv.token}"}
+        inv, link, reused = make_invite(s, cv_id, vid, u.id, base_url(request), body.get("lang", "en"))
+        return {"id": inv.id, "token": inv.token, "link": link, "reused": reused}
+
+
+@app.delete("/api/invites/{iid}")
+def del_invite(iid: int, u: User = Depends(require_admin)):
+    with contextlib.closing(Session(engine)) as s:
+        inv = s.get(Invite, iid)
+        if inv:
+            for r in s.exec(select(InterviewReport).where(InterviewReport.invite_id == iid)).all():
+                s.delete(r)
+            s.delete(inv); s.commit()
+    return {"ok": True}
 
 
 @app.get("/api/invites")
@@ -357,6 +433,7 @@ def list_invites(request: Request, u: User = Depends(require_admin)):
         out = []
         for inv in s.exec(select(Invite).order_by(Invite.id.desc())).all():
             cv = s.get(CV, inv.cv_id)
+            vac = s.get(Vacancy, inv.vacancy_id)
             rep = s.exec(select(InterviewReport).where(InterviewReport.invite_id == inv.id)).first()
             fp = os.path.join(RECORDINGS_DIR, f"frames_{inv.id}.jpg")
             live = (not inv.completed) and os.path.exists(fp) and (time.time() - os.path.getmtime(fp)) < 30
@@ -364,7 +441,8 @@ def list_invites(request: Request, u: User = Depends(require_admin)):
                 "id": inv.id, "token": inv.token, "completed": inv.completed, "live": live,
                 "link": f"{base_url(request)}/interview/{inv.token}",
                 "candidate": cv.candidate_name if cv else f"CV#{inv.cv_id}",
-                "vacancy_id": inv.vacancy_id,
+                "vacancy_id": inv.vacancy_id, "vacancy": vac.title if vac else "?",
+                "cv_id": inv.cv_id, "created_at": inv.created_at, "answered": inv.progress,
                 "report_id": rep.id if rep else None,
                 "score": rep.total_score if rep else None,
                 "decision": rep.decision if rep else None,
@@ -379,8 +457,10 @@ def my_invites(request: Request, u: User = Depends(current_user)):
         out = []
         for cv in cvs:
             for inv in s.exec(select(Invite).where(Invite.cv_id == cv.id)).all():
+                vac = s.get(Vacancy, inv.vacancy_id)
                 out.append({"link": f"{base_url(request)}/interview/{inv.token}", "completed": inv.completed,
-                            "vacancy_id": inv.vacancy_id, "cv_filename": cv.filename})
+                            "vacancy_id": inv.vacancy_id, "vacancy": vac.title if vac else "?",
+                            "cv_filename": cv.filename})
         return out
 
 
@@ -404,39 +484,67 @@ def interview_info(token: str):
             "completed": inv.completed,
             "questions_total": len(json.loads(inv.questions)),
             "answered": inv.progress,
+            "lang": json.loads(inv.state or "{}").get("lang", "en"),
         }
 
 
 @app.post("/api/interview/{token}/start")
-def interview_start(token: str):
+def interview_start(token: str, body: dict = None):
     iid, cv_id, vid, inv = _interview_invite(token)
+    body = body or {}
     with contextlib.closing(Session(engine)) as s:
         inv = s.get(Invite, iid)
         vac = s.get(Vacancy, vid)
         cv = s.get(CV, cv_id)
         if inv.completed:
             raise HTTPException(400, "Interview already completed")
+        state = json.loads(inv.state or "{}")
+        if body.get("lang") in LANGS and not json.loads(inv.questions):
+            state["lang"] = body["lang"]
+        lang = LANGS.get(state.get("lang", "en"), "English")
         questions = json.loads(inv.questions)
         if not questions:
             q = llm.chat_json([
-                {"role": "system", "content": "You prepare AI interview questions. Mix basics and role-specific questions. Questions must be answerable by voice in 1-2 minutes."},
-                {"role": "user", "content": f"Vacancy: {vac.title} — {vac.description}\nRequirements: {vac.requirements}\nCandidate skills: {', '.join(cv.skills_list())}\nCandidate CV (truncated): {cv.text[:2000]}\n\nGenerate 5-6 interview questions. Return JSON: {{\"questions\": [\"...\"]}}"},
+                {"role": "system", "content": "You are a senior hiring manager preparing a structured voice interview. "
+                 "Write 6 questions in increasing difficulty: 1 warm-up about the candidate's background, 3 role-specific technical/professional questions "
+                 "tied to the vacancy requirements, 1 question probing a specific claim from the CV, 1 behavioural/situational question (STAR). "
+                 "Each question must be answerable by voice in 1-2 minutes, one sentence, no multi-part questions. "
+                 f"Write the questions in {lang}."},
+                {"role": "user", "content": f"Vacancy: {vac.title} — {vac.description}\nRequirements: {vac.requirements}\nCandidate skills: {', '.join(cv.skills_list())}\nCandidate CV (truncated): {cv.text[:2000]}\n\nReturn JSON: {{\"questions\": [\"...\"]}}"},
             ])
-            questions = [str(x) for x in q.get("questions", [])][:6]
+            questions = [str(x).strip() for x in q.get("questions", []) if str(x).strip()][:6]
             if not questions:
                 questions = [f"Tell me about your experience relevant to {vac.title}.",
                              "What are your strongest skills?", "Describe a difficult project you completed."]
             inv.questions = json.dumps(questions)
-            inv.state = json.dumps({"q_index": 0, "awaiting_followup": False})
+            state.update({"q_index": 0, "awaiting_followup": False})
+            inv.state = json.dumps(state)
             s.add(inv)
-            rep = InterviewReport(invite_id=iid, cv_id=cv_id, vacancy_id=vid)
-            s.add(rep)
+            if not s.exec(select(InterviewReport).where(InterviewReport.invite_id == iid)).first():
+                s.add(InterviewReport(invite_id=iid, cv_id=cv_id, vacancy_id=vid))
             s.commit()
-        intro = llm.chat([
-            {"role": "system", "content": "You are Nova, a warm and lively AI interviewer with a bit of personality (like a friendly robot colleague). Introduce yourself by name in 3-5 short conversational sentences: welcome the candidate, mention the role, explain the format (5-6 questions answered by voice), reassure them and wish luck. Sound human and encouraging, not corporate."},
-            {"role": "user", "content": f"Candidate {cv.candidate_name} is interviewing for {vac.title}."},
-        ], temperature=0.7)
-        return {"intro": intro, "question": questions[0], "total": len(questions)}
+        resume = inv.progress > 0 or state.get("awaiting_followup")
+        qi = min(state.get("q_index", 0), len(questions) - 1)
+        current = questions[qi]
+        if state.get("awaiting_followup"):
+            rep = s.exec(select(InterviewReport).where(InterviewReport.invite_id == iid)).first()
+            tr = rep.transcript_list() if rep else []
+            if tr and tr[-1].get("followup"):
+                current = tr[-1]["followup"]
+        try:
+            intro = llm.chat([
+                {"role": "system", "content": "You are Nova, a warm, professional AI interviewer. " + (
+                    "The candidate reconnected to an interview already in progress: welcome them back in 1-2 short sentences and say you'll continue."
+                    if resume else
+                    "Introduce yourself by name in 3-4 short conversational sentences: welcome the candidate, mention the role, explain the format "
+                    f"({len(questions)} questions answered by voice or text, possibly a short follow-up), reassure them.")
+                 + f" Speak {lang}. Plain text only, no markdown, no emojis."},
+                {"role": "user", "content": f"Candidate {cv.candidate_name} is interviewing for {vac.title}."},
+            ], temperature=0.7)
+        except Exception:
+            intro = f"Hi {cv.candidate_name}, I'm Nova. Welcome to your interview for {vac.title}."
+        return {"intro": intro, "question": current, "total": len(questions), "answered": inv.progress,
+                "followup": bool(state.get("awaiting_followup")), "lang": state.get("lang", "en")}
 
 
 def _finalize(s, inv, rep, vac, cv, note=""):
@@ -444,10 +552,13 @@ def _finalize(s, inv, rep, vac, cv, note=""):
     transcript = rep.transcript_list()
     scores = [t.get("score", 5) for t in transcript if t.get("score") is not None]
     rep.total_score = round(sum(scores) / len(scores), 1) if scores else 0
+    answered_main = len([t for t in transcript if t.get("followup_of") is None])
     if transcript:
         final = llm.chat_json([
-            {"role": "system", "content": "You write final hiring reports. Be decisive."},
-            {"role": "user", "content": f"Role: {vac.title}\nInterview may have ended early: {note}\nTranscript with scores: {json.dumps(transcript)[:5000]}\nCV summary: {cv.candidate_name}, skills: {', '.join(cv.skills_list())}\n\nReturn JSON: {{\"decision\": \"HIRE|CONSIDER|REJECT\", \"justification\": \"3-4 sentences\", \"strengths\": [\"...\"], \"weaknesses\": [\"...\"], \"areas\": [\"knowledge areas demonstrated\"]}}"},
+            {"role": "system", "content": "You write final hiring reports for a recruiter. Be decisive and evidence-based. "
+             "Decision policy: average >= 7.5 and no critical gaps -> HIRE; 5.5-7.4 or interview incomplete -> CONSIDER; < 5.5 -> REJECT. "
+             "Deviate from the policy only with an explicit reason in the justification. Reference specific answers. Write in English."},
+            {"role": "user", "content": f"Role: {vac.title}\nAverage score: {rep.total_score}/10. Main questions answered: {answered_main}/{len(json.loads(inv.questions) or [])}. Interview may have ended early: {note}\nTranscript with scores: {json.dumps(transcript)[:5000]}\nCV summary: {cv.candidate_name}, skills: {', '.join(cv.skills_list())}\n\nReturn JSON: {{\"decision\": \"HIRE|CONSIDER|REJECT\", \"justification\": \"3-4 sentences\", \"strengths\": [\"...\"], \"weaknesses\": [\"...\"], \"areas\": [\"knowledge areas demonstrated\"]}}"},
         ])
         rep.decision = final.get("decision", "CONSIDER") if final.get("decision") in ("HIRE", "CONSIDER", "REJECT") else "CONSIDER"
         rep.justification = str(final.get("justification", ""))
@@ -470,6 +581,10 @@ def interview_answer(token: str, body: dict):
         raise HTTPException(400, "Empty answer")
     with contextlib.closing(Session(engine)) as s:
         inv = s.get(Invite, iid)
+        if inv.completed:
+            raise HTTPException(400, "Interview already completed")
+        if not json.loads(inv.questions):
+            raise HTTPException(400, "Interview not started")
         vac = s.get(Vacancy, vid)
         cv = s.get(CV, cv_id)
         rep = s.exec(select(InterviewReport).where(InterviewReport.invite_id == iid)).first()
@@ -485,9 +600,16 @@ def interview_answer(token: str, body: dict):
         q_text = transcript[-1].get("followup", "?") if is_followup and transcript else (questions[qi] if qi < len(questions) else "?")
         entry = {"q": q_text, "a": answer, "followup_of": qi if is_followup else None}
 
+        lang = LANGS.get(state.get("lang", "en"), "English")
         out = llm.chat_json([
-            {"role": "system", "content": "You are Nova, a warm AI interviewer. React like a real human interviewer would in conversation: acknowledge something specific from the answer in 1-2 natural sentences (e.g. 'Oh, nice, the semaphore trick — that's exactly how you keep the pool from melting down.'). Score fairly: concise correct answers 6-8, wrong/vague 2-4, excellent 9-10."},
-            {"role": "user", "content": f"Role: {vac.title}. Question: {q_text}\nCandidate answer: {answer}\n\nReturn JSON: {{\"score\": 0-10, \"feedback\": \"1-2 conversational sentences reacting to what was said\", \"followup\": null or \"one short probing question if the answer is vague, else null\"}}"},
+            {"role": "system", "content": "You are Nova, a warm but rigorous AI interviewer. React like a real human interviewer: acknowledge something specific "
+             "from the answer in 1-2 natural sentences, without revealing the correct answer or the score. "
+             "Scoring rubric (0-10): 0-2 off-topic/no answer/incorrect; 3-4 vague or mostly wrong; 5-6 partially correct, lacks depth or examples; "
+             "7-8 correct and clear with a concrete example; 9-10 expert-level depth, trade-offs, real experience. "
+             "Speech-to-text may contain recognition errors — judge the meaning, not the spelling. "
+             "Ask a follow-up only if the answer is vague or too short to judge (and never for follow-up answers). "
+             f"Write feedback and follow-up in {lang}."},
+            {"role": "user", "content": f"Role: {vac.title}. Requirements: {vac.requirements[:500]}\nQuestion: {q_text}\nCandidate answer: {answer[:3000]}\n\nReturn JSON: {{\"score\": 0-10, \"feedback\": \"1-2 conversational sentences\", \"followup\": null or \"one short probing question\"}}"},
         ])
         try:
             score = max(0, min(10, float(out.get("score", 5))))
@@ -674,48 +796,73 @@ def reports(u: User = Depends(require_admin)):
 
 
 # ---------------- chat assistant with intents ----------------
-def _exec_action(action, params, s, request, u):
-    if action == "run_analysis":
-        vid = params.get("vacancy_id")
+def _find_vacancy(s, params, fallback_id=None):
+    vid = params.get("vacancy_id") or fallback_id
+    vac = None
+    with contextlib.suppress(Exception):
         vac = s.get(Vacancy, int(vid)) if vid else None
+    if not vac and params.get("vacancy_title"):
+        vac = s.exec(select(Vacancy).where(Vacancy.title.ilike(f"%{params['vacancy_title']}%"))).first()
+    return vac
+
+
+def _invite_best_after(vacancy_id: int, uid: int, base: str):
+    """Callback for chained 'run analysis, then invite the best' commands."""
+    def cb(run_id):
+        with contextlib.closing(Session(engine)) as s:
+            best = s.exec(select(Analysis).where(Analysis.vacancy_id == vacancy_id, Analysis.status == "done")
+                          .order_by(Analysis.fit_score.desc())).first()
+            if not best:
+                return {"followup_error": "No candidate could be scored, nobody invited."}
+            cv = s.get(CV, best.cv_id)
+            inv, link, _ = make_invite(s, best.cv_id, vacancy_id, uid, base)
+            return {"invite": {"candidate": cv.candidate_name if cv else f"CV #{best.cv_id}",
+                               "fit": best.fit_score, "link": link}}
+    return cb
+
+
+def _exec_action(action, params, s, request, u, ctx):
+    if action == "run_analysis":
+        vac = _find_vacancy(s, params, ctx.get("selected_vacancy_id"))
         if not vac:
             return "Vacancy not found — nothing analyzed."
         cv_ids = [c.id for c in s.exec(select(CV).where(CV.category == vac.category)).all()]
         if not cv_ids:
             return f"No CVs in category '{vac.category}'."
-        run_id = analysis.start_run(vac.id, cv_ids)
-        return {"text": f"Started analysis for '{vac.title}' on {len(cv_ids)} CV(s). Watch the progress panel.", "run_id": run_id, "vacancy_id": vac.id}
+        on_done = _invite_best_after(vac.id, u.id, base_url(request)) if ctx.get("then_invite") == vac.id else None
+        run_id = analysis.start_run(vac.id, cv_ids, on_done=on_done)
+        ctx["pending_run"] = vac.id
+        extra = " The best candidate will be invited automatically when it finishes." if on_done else ""
+        return {"text": f"Started analysis for '{vac.title}' on {len(cv_ids)} CV(s).{extra}", "run_id": run_id, "vacancy_id": vac.id}
 
     if action == "invite_best":
-        vid = params.get("vacancy_id")
-        vac = s.get(Vacancy, int(vid)) if vid else None
+        vac = _find_vacancy(s, params, ctx.get("selected_vacancy_id"))
         if not vac:
             return "Vacancy not found."
+        if ctx.get("pending_run") == vac.id:
+            return {"text": f"Will invite the best candidate for '{vac.title}' as soon as the analysis completes."}
         best = s.exec(select(Analysis).where(Analysis.vacancy_id == vac.id, Analysis.status == "done")
                       .order_by(Analysis.fit_score.desc())).first()
         if not best:
             return f"No completed analysis for '{vac.title}' yet. Run the analysis first."
-        inv = Invite(token=secrets.token_urlsafe(16), cv_id=best.cv_id, vacancy_id=vac.id, created_by=u.id)
-        s.add(inv); s.commit(); s.refresh(inv)
-        link = f"{base_url(request)}/interview/{inv.token}"
-        print(f"[email-log] Invite (best) for CV #{best.cv_id}: {link}")
-        return {"text": f"Invited the best candidate for '{vac.title}' (fit {best.fit_score}/100). Interview link: {link}", "link": link}
+        cv = s.get(CV, best.cv_id)
+        inv, link, reused = make_invite(s, best.cv_id, vac.id, u.id, base_url(request))
+        return {"text": f"{'Re-used open invite for' if reused else 'Invited'} the best candidate for '{vac.title}': "
+                        f"{cv.candidate_name if cv else ''} (fit {best.fit_score}/100). Interview link: {link}", "link": link}
 
     if action == "invite_candidate":
-        cv = s.get(CV, int(params.get("cv_id", 0)))
+        cv = None
+        with contextlib.suppress(Exception):
+            cv = s.get(CV, int(params.get("cv_id", 0)))
+        if not cv and params.get("candidate_name"):
+            cv = s.exec(select(CV).where(CV.candidate_name.ilike(f"%{params['candidate_name']}%"))).first()
         if not cv:
             return "Candidate not found."
-        vac = None
-        if params.get("vacancy_id"):
-            vac = s.get(Vacancy, int(params["vacancy_id"]))
-        elif params.get("vacancy_title"):
-            vac = s.exec(select(Vacancy).where(Vacancy.title.ilike(f"%{params['vacancy_title']}%"))).first()
+        vac = _find_vacancy(s, params, ctx.get("selected_vacancy_id"))
         if not vac:
             return "Vacancy not found — invite not created."
-        inv = Invite(token=secrets.token_urlsafe(16), cv_id=cv.id, vacancy_id=vac.id, created_by=u.id)
-        s.add(inv); s.commit(); s.refresh(inv)
-        link = f"{base_url(request)}/interview/{inv.token}"
-        return {"text": f"Invited {cv.candidate_name}. Interview link: {link}", "link": link}
+        inv, link, reused = make_invite(s, cv.id, vac.id, u.id, base_url(request))
+        return {"text": f"{'Re-used open invite for' if reused else 'Invited'} {cv.candidate_name} to '{vac.title}'. Interview link: {link}", "link": link}
 
     if action == "list_candidates":
         q = select(CV)
@@ -724,24 +871,47 @@ def _exec_action(action, params, s, request, u):
         cvs = s.exec(q).all()
         if not cvs:
             return "No CVs stored."
-        lines = [f"- #{c.id} {c.candidate_name} ({c.category}, {c.years_exp} yrs, AI-score {c.ai_score if c.ai_score is not None else '?'})" for c in cvs]
-        return "Stored candidates:\n" + "\n".join(lines[:15])
+        lines = [f"- #{c.id} {c.candidate_name} ({c.category}, {c.years_exp:g} yrs, AI-score {c.ai_score if c.ai_score is not None else '?'})" for c in cvs]
+        return "Stored candidates:\n" + "\n".join(lines[:20])
 
     if action == "show_report":
-        vid = params.get("vacancy_id")
-        rows = s.exec(select(Analysis).where(Analysis.vacancy_id == int(vid)) if vid else select(Analysis)).all()
+        vac = _find_vacancy(s, params, None)
+        rows = s.exec(select(Analysis).where(Analysis.vacancy_id == vac.id) if vac else select(Analysis)).all()
         rows = [r for r in rows if r.status == "done"]
         rows.sort(key=lambda r: -(r.fit_score or 0))
         if not rows:
             return "No completed analysis results yet."
         lines = []
         for r in rows[:8]:
-            cv = s.get(CV, r.cv_id)
-            vac = s.get(Vacancy, r.vacancy_id)
-            lines.append(f"- {cv.candidate_name} vs '{vac.title}': fit {r.fit_score}/100, AI-score {cv.ai_score} — {r.summary[:140]}")
+            cv, v = s.get(CV, r.cv_id), s.get(Vacancy, r.vacancy_id)
+            if cv and v:
+                lines.append(f"- {cv.candidate_name} vs '{v.title}': fit {r.fit_score}/100, AI-score {cv.ai_score} — {r.summary[:140]}")
         return "Top results:\n" + "\n".join(lines)
 
     return f"Unknown action '{action}'."
+
+
+CHAT_SYSTEM = """You are Ishveren's AI HR assistant for a recruiter. You answer professionally and concisely, and you can execute actions.
+Reply in the same language the user writes in.
+
+Classify every message:
+- intent "chat": questions, opinions, advice, explanations, analysis of the data below → answer in "reply"; "actions" MUST be [].
+- intent "action": ONLY explicit imperative commands to DO something (run, start, invite, list, show).
+
+Allowed actions (executed in the given order):
+- run_analysis {vacancy_id}
+- invite_best {vacancy_id}
+- invite_candidate {cv_id, vacancy_id}
+- list_candidates {category?}
+- show_report {vacancy_id?}
+Resolve vacancy/candidate names to ids using the data below. If the user says "this vacancy", use selected_vacancy_id.
+If a command is ambiguous or the target does not exist, do not guess — use intent "chat" and ask a short clarifying question.
+For "chat" answers you may use the analysis/interview data below (fit scores, AI-scores, decisions) to give concrete recommendations.
+Keep replies under 120 words, plain text (simple "- " bullet lists allowed, no markdown headings or bold).
+
+Return ONLY JSON: {"intent": "chat"|"action", "actions": [{"action": "...", "params": {...}}], "reply": "..."}
+
+Current data: """
 
 
 @app.post("/api/chat")
@@ -749,30 +919,49 @@ def chat(body: dict, request: Request, u: User = Depends(require_admin)):
     message = (body.get("message") or "").strip()
     if not message:
         raise HTTPException(400, "Empty message")
+    history = [m for m in (body.get("history") or []) if isinstance(m, dict) and m.get("role") in ("user", "assistant")][-8:]
     with contextlib.closing(Session(engine)) as s:
         vacs = s.exec(select(Vacancy)).all()
         cvs = s.exec(select(CV)).all()
+        done = s.exec(select(Analysis).where(Analysis.status == "done")).all()
+        fits = {}
+        for a in done:
+            fits.setdefault(a.cv_id, {})[a.vacancy_id] = a.fit_score
+        reports = {r.cv_id: r for r in s.exec(select(InterviewReport)).all() if r.decision}
         context = {
             "vacancies": [{"id": v.id, "title": v.title, "category": v.category, "active": v.active} for v in vacs],
-            "candidates": [{"id": c.id, "name": c.candidate_name, "category": c.category,
-                            "fit_analyzed": bool(s.exec(select(Analysis).where(Analysis.cv_id == c.id, Analysis.status == "done")).first())}
-                           for c in cvs[:30]],
+            "candidates": [{"id": c.id, "name": c.candidate_name, "category": c.category, "years": c.years_exp,
+                            "ai_score": c.ai_score, "fit_by_vacancy_id": fits.get(c.id, {}),
+                            "interview": ({"decision": reports[c.id].decision, "score": reports[c.id].total_score} if c.id in reports else None)}
+                           for c in cvs[:60]],
             "selected_vacancy_id": body.get("vacancy_id"),
         }
-        out = llm.chat_json([
-            {"role": "system", "content": "You are an AI HR assistant with optional actions. Classify the user message.\n- intent 'chat': any question, opinion, or advice request → just answer in 'reply', action must be null.\n- intent 'action': ONLY explicit commands to DO something. Allowed actions: run_analysis {vacancy_id}, invite_best {vacancy_id}, invite_candidate {cv_id, vacancy_id}, list_candidates {category?}, show_report {vacancy_id?}. Multiple actions allowed as 'actions': [{action, params}, ...].\nWrite a short helpful 'reply' in all cases.\nCurrent data: " + json.dumps(context)},
-            {"role": "user", "content": message},
-        ])
-        reply = out.get("reply", "")
+        msgs = [{"role": "system", "content": CHAT_SYSTEM + json.dumps(context, ensure_ascii=False)}]
+        msgs += [{"role": m["role"], "content": str(m.get("content", ""))[:1500]} for m in history]
+        msgs.append({"role": "user", "content": message})
+        try:
+            out = llm.chat_json(msgs)
+        except Exception as e:
+            raise HTTPException(502, f"AI is unavailable right now: {str(e)[:120]}")
+        reply = str(out.get("reply", "") or "")
         intent = out.get("intent", "chat")
-        executed = []
-        actions = out.get("actions") if isinstance(out.get("actions"), list) else ([{"action": out.get("action"), "params": out.get("params", {})}] if out.get("action") else [])
-        run_id = None
+        actions = out.get("actions") if isinstance(out.get("actions"), list) else (
+            [{"action": out.get("action"), "params": out.get("params", {})}] if out.get("action") else [])
+        actions = [a for a in actions if isinstance(a, dict) and a.get("action") and a.get("action") != "null"]
+        if intent == "chat":
+            actions = []
+        ctx = {"selected_vacancy_id": body.get("vacancy_id")}
+        # chained "analyze X ... invite best for X" → invite after the background run finishes
+        names = [a["action"] for a in actions]
+        if "run_analysis" in names and "invite_best" in names:
+            ra = actions[names.index("run_analysis")]
+            vac = _find_vacancy(s, ra.get("params") or {}, ctx["selected_vacancy_id"])
+            if vac:
+                ctx["then_invite"] = vac.id
+        executed, run_id = [], None
         for act in actions:
-            if not isinstance(act, dict) or not act.get("action") or act.get("action") == "null":
-                continue
             try:
-                res = _exec_action(act["action"], act.get("params", {}) or {}, s, request, u)
+                res = _exec_action(act["action"], act.get("params") or {}, s, request, u, ctx)
             except Exception as e:
                 res = f"Action failed: {str(e)[:150]}"
             if isinstance(res, dict):
@@ -784,7 +973,15 @@ def chat(body: dict, request: Request, u: User = Depends(require_admin)):
 
 
 # ---------------- static ----------------
-app.mount("/recordings", StaticFiles(directory=RECORDINGS_DIR), name="recordings")
+@app.get("/recordings/{filename}")
+def get_recording(filename: str, u: User = Depends(require_admin)):
+    """Recordings and live frames are admin-only (they contain candidates' video)."""
+    if "/" in filename or "\\" in filename or filename.startswith("."):
+        raise HTTPException(400, "Bad filename")
+    p = os.path.join(RECORDINGS_DIR, filename)
+    if not os.path.isfile(p):
+        raise HTTPException(404, "Not found")
+    return FileResponse(p, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/interview/{token}")

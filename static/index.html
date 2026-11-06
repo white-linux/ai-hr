@@ -7,97 +7,118 @@
 <script src="https://cdn.tailwindcss.com"></script>
 <script>tailwind.config = { darkMode: 'class' }</script>
 <style>
-  body { background:#0b1020; }
+  body { background: radial-gradient(1200px 600px at 10% -10%, #1e1b4b 0%, transparent 60%), #0b1020; }
   ::-webkit-scrollbar{width:8px;height:8px} ::-webkit-scrollbar-thumb{background:#2a3655;border-radius:4px}
-  .spin{animation:sp 1s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}
+  .spin{animation:sp 1s linear infinite;display:inline-block}@keyframes sp{to{transform:rotate(360deg)}}
+  .panel{background:rgba(15,23,42,.6);border:1px solid #1e293b;border-radius:1rem;backdrop-filter:blur(6px)}
+  .inp{width:100%;background:#1e293b;border:1px solid #334155;border-radius:.5rem;padding:.5rem .75rem;font-size:.875rem;outline:none}
+  .inp:focus{border-color:#6366f1}
+  .btn{padding:.375rem .75rem;border-radius:.5rem;font-size:.75rem;font-weight:500;transition:background .15s}
+  .chip{padding:.25rem .6rem;border-radius:9999px;font-size:11px;border:1px solid #334155;background:#1e293b;color:#cbd5e1;white-space:nowrap}
+  .chip:hover{border-color:#6366f1;color:#fff}
+  .bar{height:6px;border-radius:9999px;background:#1e293b;overflow:hidden}.bar>i{display:block;height:100%;border-radius:9999px}
 </style>
 </head>
 <body class="text-slate-200 min-h-screen">
-<div id="toasts" class="fixed top-4 right-4 z-50 space-y-2 w-80"></div>
+<div id="toasts" class="fixed top-4 right-4 z-[60] space-y-2 w-80"></div>
 
 <!-- AUTH -->
-<div id="auth-view" class="min-h-screen flex items-center justify-center">
-  <div class="w-full max-w-sm bg-slate-900/70 border border-slate-800 rounded-2xl p-8 shadow-xl">
-    <h1 class="text-2xl font-bold text-center mb-1">🧑‍💼 Ishveren</h1>
-    <p class="text-center text-slate-400 text-sm mb-6">CV screening · analysis · AI interviews</p>
-    <div class="flex gap-2 mb-6">
+<div id="auth-view" class="min-h-screen flex items-center justify-center p-4">
+  <div class="w-full max-w-sm panel p-8 shadow-2xl">
+    <div class="text-center mb-6">
+      <div class="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-indigo-600/20 border border-indigo-500/40 text-2xl mb-3">🧑‍💼</div>
+      <h1 class="text-2xl font-bold">Ishveren</h1>
+      <p class="text-slate-400 text-sm">AI recruiting: CV screening · fit analysis · voice interviews</p>
+    </div>
+    <div class="flex gap-1 mb-6 p-1 bg-slate-800/70 rounded-xl">
       <button id="tab-login" class="flex-1 py-2 rounded-lg text-sm font-medium bg-indigo-600">Sign in</button>
-      <button id="tab-reg" class="flex-1 py-2 rounded-lg text-sm font-medium bg-slate-800 text-slate-400">Register</button>
+      <button id="tab-reg" class="flex-1 py-2 rounded-lg text-sm font-medium text-slate-400">Register as candidate</button>
     </div>
-    <div id="reg-name" class="hidden mb-3">
-      <label class="text-xs text-slate-400">Name</label>
-      <input id="f-name" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-500" placeholder="Jane Doe">
-    </div>
-    <div class="mb-3">
-      <label class="text-xs text-slate-400">Email</label>
-      <input id="f-email" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-500" placeholder="admin">
-    </div>
-    <div class="mb-5">
-      <label class="text-xs text-slate-400">Password</label>
-      <input id="f-pass" type="password" class="w-full mt-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-500" placeholder="••••••">
-    </div>
-    <button id="auth-btn" class="w-full py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 font-medium">Sign in</button>
-    <p class="text-xs text-slate-500 mt-4 text-center">Admin demo: admin / admin123</p>
+    <form id="auth-form" class="space-y-3">
+      <div id="reg-name" class="hidden"><label class="text-xs text-slate-400">Full name</label><input id="f-name" class="inp mt-1" placeholder="Jane Doe" autocomplete="name"></div>
+      <div><label class="text-xs text-slate-400">Email</label><input id="f-email" class="inp mt-1" placeholder="you@example.com" autocomplete="username"></div>
+      <div><label class="text-xs text-slate-400">Password</label><input id="f-pass" type="password" class="inp mt-1" placeholder="••••••" autocomplete="current-password"></div>
+      <button id="auth-btn" type="submit" class="w-full py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 font-medium mt-2">Sign in</button>
+    </form>
+    <p class="text-xs text-slate-500 mt-4 text-center">Recruiter demo: <code class="text-slate-400">admin</code> / <code class="text-slate-400">admin123</code></p>
   </div>
 </div>
 
 <!-- APP -->
 <div id="app-view" class="hidden">
-  <header class="flex items-center justify-between px-6 py-3 border-b border-slate-800 bg-slate-900/60 sticky top-0 z-40 backdrop-blur">
-    <h1 class="font-bold">🧑‍💼 Ishveren</h1>
+  <header class="flex items-center justify-between px-5 py-3 border-b border-slate-800 bg-slate-950/70 sticky top-0 z-40 backdrop-blur">
     <div class="flex items-center gap-3">
-      <span id="user-label" class="text-sm text-slate-400"></span>
-      <button onclick="showVideos()" class="text-sm px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700">🎥 Videos</button>
-      <button onclick="api('/api/auth/logout',{method:'POST'}).then(()=>location.reload())" class="text-sm px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700">Logout</button>
+      <span class="w-8 h-8 rounded-xl bg-indigo-600/20 border border-indigo-500/40 flex items-center justify-center">🧑‍💼</span>
+      <h1 class="font-bold">Ishveren <span class="text-slate-500 font-normal text-sm">AI Recruiter</span></h1>
+    </div>
+    <div id="kpis" class="hidden xl:flex items-center gap-2 text-xs"></div>
+    <div class="flex items-center gap-2">
+      <span id="user-label" class="text-sm text-slate-400 hidden sm:inline"></span>
+      <button id="videos-btn" onclick="showVideos()" class="btn bg-slate-800 hover:bg-slate-700 hidden">🎥 Recordings</button>
+      <button onclick="logout()" class="btn bg-slate-800 hover:bg-slate-700">Logout</button>
     </div>
   </header>
 
   <!-- ADMIN DASHBOARD -->
-  <div id="admin-view" class="grid grid-cols-12 gap-4 p-4 max-w-[1700px] mx-auto">
+  <div id="admin-view" class="hidden grid grid-cols-12 gap-4 p-4 max-w-[1800px] mx-auto">
     <!-- LEFT: CVs -->
-    <section class="col-span-12 lg:col-span-3 bg-slate-900/50 border border-slate-800 rounded-2xl p-4 flex flex-col max-h-[calc(100vh-90px)]">
+    <section class="col-span-12 lg:col-span-3 panel p-4 flex flex-col lg:h-[calc(100vh-88px)]">
       <div class="flex items-center justify-between mb-3">
-        <h2 class="font-semibold">📄 CV Library</h2>
-        <label class="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 cursor-pointer">
-          + Upload
-          <input id="cv-upload" type="file" multiple accept=".pdf,.docx,.txt" class="hidden">
-        </label>
+        <h2 class="font-semibold">📄 CV Library <span id="cv-count" class="text-slate-500 text-xs font-normal"></span></h2>
+        <label class="btn bg-indigo-600 hover:bg-indigo-500 cursor-pointer">+ Upload<input id="cv-upload" type="file" multiple accept=".pdf,.docx,.txt" class="hidden"></label>
       </div>
+      <div id="drop-zone" class="border border-dashed border-slate-700 rounded-xl p-3 text-center text-xs text-slate-500 mb-3 transition-colors">Drop PDF / DOCX / TXT files here</div>
+      <input id="cv-search" class="inp mb-2" placeholder="Search name, skill, email…">
+      <div id="cv-filter-note" class="text-xs text-indigo-300 mb-2 hidden"></div>
       <div id="upload-status" class="text-xs text-slate-400 mb-2"></div>
-      <div id="cv-list" class="overflow-y-auto space-y-4 pr-1 flex-1"><p class="text-slate-500 text-sm">Loading…</p></div>
+      <div id="cv-list" class="overflow-y-auto space-y-4 pr-1 flex-1 min-h-[200px]"><p class="text-slate-500 text-sm">Loading…</p></div>
     </section>
 
-    <!-- CENTER: chat + results -->
-    <section class="col-span-12 lg:col-span-6 flex flex-col gap-4 max-h-[calc(100vh-90px)]">
-      <div class="bg-slate-900/50 border border-slate-800 rounded-2xl p-4 flex flex-col h-[46%]">
-        <h2 class="font-semibold mb-2">💬 AI Assistant <span class="text-xs text-slate-500 font-normal">— actions only on explicit commands</span></h2>
-        <div id="chat-log" class="flex-1 overflow-y-auto space-y-3 pr-1 text-sm"></div>
-        <div class="flex gap-2 mt-3">
-          <input id="chat-input" class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-500" placeholder="Ask anything, or: 'start analysis for Python Developer and invite the best candidate'" onkeydown="if(event.key==='Enter')sendChat()">
-          <button id="chat-send" onclick="sendChat()" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-sm font-medium">Send</button>
+    <!-- CENTER: results + chat -->
+    <section class="col-span-12 lg:col-span-6 flex flex-col gap-4 lg:h-[calc(100vh-88px)]">
+      <div class="panel p-4 flex-1 flex flex-col min-h-[320px] overflow-hidden">
+        <div class="flex items-center justify-between mb-2 gap-2">
+          <h2 class="font-semibold truncate">📊 Ranking <span id="results-vac" class="text-indigo-400 text-sm font-normal"></span></h2>
+          <div class="flex gap-2 shrink-0">
+            <button id="invite-best-btn" onclick="inviteBest()" class="btn bg-slate-800 hover:bg-slate-700 hidden">🏆 Invite best</button>
+            <button onclick="runAnalysis(true)" class="btn bg-slate-800 hover:bg-slate-700" title="Re-run AI detection and footprint checks for every CV (slower)">⟳ Full re-scan</button>
+            <button id="run-btn" onclick="runAnalysis()" class="btn bg-emerald-600 hover:bg-emerald-500" title="Fast: reuses cached AI-detection & footprint, scores fit">▶ Run analysis</button>
+          </div>
+        </div>
+        <div id="progress-wrap" class="hidden mb-2"><div class="flex justify-between text-xs text-slate-400 mb-1"><span id="progress-label">Analyzing…</span><span id="progress-pct"></span></div><div class="bar"><i id="progress-bar" class="bg-indigo-500 transition-all" style="width:0%"></i></div></div>
+        <div id="stats-bar" class="grid grid-cols-4 gap-2 text-xs mb-3"></div>
+        <div id="results-list" class="overflow-y-auto space-y-2 pr-1 flex-1">
+          <div class="text-center text-slate-500 text-sm py-10">👉 Select a vacancy on the right to see ranked candidates.</div>
         </div>
       </div>
-      <div class="bg-slate-900/50 border border-slate-800 rounded-2xl p-4 flex-1 flex flex-col overflow-hidden">
+      <div class="panel p-4 flex flex-col h-[42%] min-h-[300px]">
         <div class="flex items-center justify-between mb-2">
-          <h2 class="font-semibold">📊 Results <span id="results-vac" class="text-indigo-400 text-sm"></span></h2>
-          <button id="run-btn" onclick="runAnalysis()" class="text-sm px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 font-medium">▶ Run analysis</button>
+          <h2 class="font-semibold">💬 AI Assistant <span class="text-xs text-slate-500 font-normal">actions run only on explicit commands</span></h2>
+          <button onclick="clearChat()" class="text-xs text-slate-500 hover:text-slate-300">Clear</button>
         </div>
-        <div id="stats-bar" class="flex gap-3 text-xs mb-2"></div>
-        <div id="results-list" class="overflow-y-auto space-y-2 pr-1 flex-1"><p class="text-slate-500 text-sm">Select a vacancy to see ranked candidates.</p></div>
+        <div id="chat-log" class="flex-1 overflow-y-auto space-y-3 pr-1 text-sm"></div>
+        <div id="chat-chips" class="flex gap-1.5 mt-2 overflow-x-auto pb-1"></div>
+        <form id="chat-form" class="flex gap-2 mt-2">
+          <input id="chat-input" class="inp flex-1" placeholder="Ask anything, or: “run analysis for Python Developer and invite the best candidate”" autocomplete="off">
+          <button id="chat-send" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-sm font-medium disabled:opacity-50">Send</button>
+        </form>
       </div>
     </section>
 
-    <!-- RIGHT: vacancies + invites/reports -->
-    <section class="col-span-12 lg:col-span-3 flex flex-col gap-4 max-h-[calc(100vh-90px)]">
-      <div class="bg-slate-900/50 border border-slate-800 rounded-2xl p-4">
+    <!-- RIGHT: vacancies + interviews -->
+    <section class="col-span-12 lg:col-span-3 flex flex-col gap-4 lg:h-[calc(100vh-88px)]">
+      <div class="panel p-4">
         <div class="flex items-center justify-between mb-3">
           <h2 class="font-semibold">💼 Vacancies</h2>
-          <button onclick="editVacancy(null)" class="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500">+ New</button>
+          <button onclick="editVacancy(null)" class="btn bg-indigo-600 hover:bg-indigo-500">+ New</button>
         </div>
         <div id="vac-list" class="space-y-2 max-h-72 overflow-y-auto pr-1"><p class="text-slate-500 text-sm">Loading…</p></div>
       </div>
-      <div class="bg-slate-900/50 border border-slate-800 rounded-2xl p-4 flex-1 overflow-hidden flex flex-col">
-        <h2 class="font-semibold mb-2">🎙 Interviews</h2>
+      <div class="panel p-4 flex-1 overflow-hidden flex flex-col min-h-[300px]">
+        <div class="flex items-center justify-between mb-2">
+          <h2 class="font-semibold">🎙 Interviews</h2>
+          <button onclick="loadInvites()" class="text-xs text-slate-500 hover:text-slate-300" title="Refresh">↻</button>
+        </div>
         <div id="invite-stats" class="flex flex-wrap gap-1.5 mb-2 text-[11px]"></div>
         <div id="invite-list" class="overflow-y-auto space-y-2 pr-1 text-sm flex-1"><p class="text-slate-500">Loading…</p></div>
       </div>
@@ -105,18 +126,22 @@
   </div>
 
   <!-- CANDIDATE VIEW -->
-  <div id="cand-view" class="hidden max-w-2xl mx-auto p-6 space-y-4">
-    <div class="bg-slate-900/50 border border-slate-800 rounded-2xl p-6">
+  <div id="cand-view" class="hidden max-w-3xl mx-auto p-6 space-y-4">
+    <div class="panel p-6">
       <h2 class="font-semibold text-lg mb-1">Apply to a vacancy</h2>
-      <p class="text-slate-400 text-sm mb-4">Upload your CV (PDF, DOCX or TXT). The AI will parse and screen it.</p>
-      <div class="flex flex-col gap-3">
-        <select id="apply-vac" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm"></select>
-        <input id="apply-file" type="file" accept=".pdf,.docx,.txt" class="text-sm">
-        <button onclick="applyJob()" class="py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 font-medium">Submit application</button>
-        <div id="apply-status" class="text-sm"></div>
+      <p class="text-slate-400 text-sm mb-4">Pick an open position and upload your CV (PDF, DOCX or TXT, up to 10 MB).</p>
+      <div id="cand-vacs" class="grid sm:grid-cols-2 gap-2 mb-4"></div>
+      <div class="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
+        <label id="apply-file-label" class="flex-1 border border-dashed border-slate-700 rounded-lg px-3 py-2.5 text-sm text-slate-400 cursor-pointer hover:border-indigo-500">📎 <span id="apply-file-name">Choose CV file…</span><input id="apply-file" type="file" accept=".pdf,.docx,.txt" class="hidden"></label>
+        <button id="apply-btn" onclick="applyJob()" class="px-5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 font-medium disabled:opacity-50">Submit application</button>
       </div>
+      <div id="apply-status" class="text-sm mt-3"></div>
     </div>
-    <div class="bg-slate-900/50 border border-slate-800 rounded-2xl p-6">
+    <div class="panel p-6">
+      <h2 class="font-semibold text-lg mb-3">My applications</h2>
+      <div id="my-apps" class="space-y-2 text-sm"><p class="text-slate-500">No applications yet.</p></div>
+    </div>
+    <div class="panel p-6">
       <h2 class="font-semibold text-lg mb-3">My interview invites</h2>
       <div id="my-invites" class="space-y-2 text-sm"><p class="text-slate-500">No invites yet.</p></div>
     </div>
@@ -125,18 +150,18 @@
 
 <!-- Vacancy modal -->
 <div id="vac-modal" class="hidden fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
-  <div class="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-md space-y-3">
+  <form id="vac-form" class="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-lg space-y-3">
     <h3 id="vac-modal-title" class="font-semibold text-lg">New vacancy</h3>
-    <input id="v-title" placeholder="Title" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
-    <select id="v-cat" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm"></select>
-    <textarea id="v-desc" placeholder="Description" rows="3" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm"></textarea>
-    <textarea id="v-req" placeholder="Requirements" rows="3" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm"></textarea>
-    <label class="flex items-center gap-2 text-sm"><input id="v-active" type="checkbox" checked> Active</label>
-    <div class="flex gap-2 justify-end">
-      <button onclick="hideModal()" class="px-4 py-2 rounded-lg bg-slate-800 text-sm">Cancel</button>
-      <button onclick="saveVacancy()" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-sm font-medium">Save</button>
+    <div><label class="text-xs text-slate-400">Title</label><input id="v-title" class="inp mt-1" placeholder="e.g. Senior Python Developer"></div>
+    <div><label class="text-xs text-slate-400">Category (CVs are filtered by it)</label><select id="v-cat" class="inp mt-1"></select></div>
+    <div><label class="text-xs text-slate-400">Description</label><textarea id="v-desc" rows="3" class="inp mt-1" placeholder="What the person will do"></textarea></div>
+    <div><label class="text-xs text-slate-400">Requirements (used for fit scoring & interview questions)</label><textarea id="v-req" rows="4" class="inp mt-1" placeholder="Must-have skills, years of experience…"></textarea></div>
+    <label class="flex items-center gap-2 text-sm"><input id="v-active" type="checkbox" checked> Active (visible to candidates)</label>
+    <div class="flex gap-2 justify-end pt-2">
+      <button type="button" onclick="hideModal()" class="px-4 py-2 rounded-lg bg-slate-800 text-sm">Cancel</button>
+      <button type="submit" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-sm font-medium">Save</button>
     </div>
-  </div>
+  </form>
 </div>
 
 <script src="/app.js"></script>
