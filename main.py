@@ -23,6 +23,15 @@ from models import (CATEGORIES, Analysis, CV, InterviewReport, Invite, User,
                     init_db, now, verify_password)
 
 app = FastAPI(title="AI Recruiter")
+
+
+from sqlalchemy.orm.exc import StaleDataError  # noqa: E402
+
+
+@app.exception_handler(StaleDataError)
+def _deleted_meanwhile(request: Request, exc: StaleDataError):
+    """Row was deleted while the request ran (e.g. admin deleted a live interview) -> clean 404, not a 500."""
+    return JSONResponse({"detail": "Invite not found (it was deleted)"}, status_code=404)
 def _load_secret():
     """Session-signing key: env HR_SECRET, else a random key persisted in .secret (never hardcoded)."""
     if os.environ.get("HR_SECRET"):
@@ -550,12 +559,14 @@ def interview_start(token: str, body: dict = None):
         if not questions:
             q = llm.chat_json([
                 {"role": "system", "content": "You are a senior hiring manager preparing a structured voice interview. "
-                 "Write 6 questions in increasing difficulty: 1 warm-up about the candidate's background, 3 role-specific technical/professional questions "
-                 "tied to the vacancy requirements, 1 question probing a specific claim from the CV, 1 behavioural/situational question (STAR). "
-                 "Each question must be answerable by voice in 1-2 minutes, one sentence, no multi-part questions. "
+                 "Write exactly 6 questions in this order: "
+                 "Q1 easy warm-up about the candidate's background and motivation; "
+                 "Q2-Q4 role-specific technical/professional questions tied to the vacancy requirements, increasing in difficulty; "
+                 "Q5 probes one specific claim from the CV; Q6 behavioural/situational (\"Tell me about a time...\"). "
+                 "Rules: each question is ONE short sentence (max 25 words), asks ONE thing, is answerable by voice in 1-2 minutes, no lists or sub-questions. "
                  f"Write the questions in {lang}."},
                 {"role": "user", "content": f"Vacancy: {vac.title} — {vac.description}\nRequirements: {vac.requirements}\nCandidate skills: {', '.join(cv.skills_list())}\nCandidate CV (truncated): {cv.text[:2000]}\n\nReturn JSON: {{\"questions\": [\"...\"]}}"},
-            ])
+            ], model=llm.FAST_MODEL)
             questions = [str(x).strip() for x in q.get("questions", []) if str(x).strip()][:6]
             if not questions:
                 questions = [f"Tell me about your experience relevant to {vac.title}.",
@@ -584,11 +595,26 @@ def interview_start(token: str, body: dict = None):
                     f"({len(questions)} questions answered by voice or text, possibly a short follow-up), reassure them.")
                  + f" Speak {lang}. Plain text only, no markdown, no emojis."},
                 {"role": "user", "content": f"Candidate {cv.candidate_name} is interviewing for {vac.title}."},
-            ], temperature=0.7)
+            ], temperature=0.7, model=llm.FAST_MODEL)
         except Exception:
             intro = f"Hi {cv.candidate_name}, I'm Nova. Welcome to your interview for {vac.title}."
         return {"intro": intro, "question": current, "total": len(questions), "answered": inv.progress,
                 "followup": bool(state.get("awaiting_followup")), "lang": state.get("lang", "en")}
+
+
+MAX_FOLLOWUPS = 2  # per interview, keeps it ~6-8 answers long
+
+
+def decide(avg: float, answered: int, total: int, llm_decision=None) -> str:
+    """Deterministic policy so the decision always matches the score; LLM only breaks ties in the middle band."""
+    complete = total and answered >= total
+    if answered < max(2, (total or 6) // 2):
+        return "CONSIDER"            # too few answers to decide either way
+    if avg >= 7.5 and complete:
+        return "HIRE"
+    if avg < 5.5:
+        return "REJECT"
+    return llm_decision if llm_decision in ("HIRE", "CONSIDER") and complete and avg >= 7 else "CONSIDER"
 
 
 def _finalize(s, inv, rep, vac, cv, note=""):
@@ -603,8 +629,8 @@ def _finalize(s, inv, rep, vac, cv, note=""):
              "Decision policy: average >= 7.5 and no critical gaps -> HIRE; 5.5-7.4 or interview incomplete -> CONSIDER; < 5.5 -> REJECT. "
              "Deviate from the policy only with an explicit reason in the justification. Reference specific answers. Write in English."},
             {"role": "user", "content": f"Role: {vac.title}\nAverage score: {rep.total_score}/10. Main questions answered: {answered_main}/{len(json.loads(inv.questions) or [])}. Interview may have ended early: {note}\nTranscript with scores: {json.dumps(transcript)[:5000]}\nCV summary: {cv.candidate_name}, skills: {', '.join(cv.skills_list())}\n\nReturn JSON: {{\"decision\": \"HIRE|CONSIDER|REJECT\", \"justification\": \"3-4 sentences\", \"strengths\": [\"...\"], \"weaknesses\": [\"...\"], \"areas\": [\"knowledge areas demonstrated\"]}}"},
-        ])
-        rep.decision = final.get("decision", "CONSIDER") if final.get("decision") in ("HIRE", "CONSIDER", "REJECT") else "CONSIDER"
+        ], model=llm.FAST_MODEL)
+        rep.decision = decide(rep.total_score, answered_main, len(json.loads(inv.questions) or []), final.get("decision"))
         rep.justification = str(final.get("justification", ""))
         rep.strengths = json.dumps([str(x) for x in final.get("strengths", [])][:6])
         rep.weaknesses = json.dumps([str(x) for x in final.get("weaknesses", [])][:6])
@@ -654,7 +680,7 @@ def interview_answer(token: str, body: dict):
              "Ask a follow-up only if the answer is vague or too short to judge (and never for follow-up answers). "
              f"Write feedback and follow-up in {lang}."},
             {"role": "user", "content": f"Role: {vac.title}. Requirements: {vac.requirements[:500]}\nQuestion: {q_text}\nCandidate answer: {answer[:3000]}\n\nReturn JSON: {{\"score\": 0-10, \"feedback\": \"1-2 conversational sentences\", \"followup\": null or \"one short probing question\"}}"},
-        ])
+        ], model=llm.FAST_MODEL)
         try:
             score = max(0, min(10, float(out.get("score", 5))))
         except Exception:
@@ -665,7 +691,9 @@ def interview_answer(token: str, body: dict):
         transcript.append(entry)
 
         next_q, done = None, False
-        if not is_followup and followup and isinstance(followup, str) and len(followup) > 5:
+        followups_used = sum(1 for t in transcript if t.get("followup"))
+        if (not is_followup and followup and isinstance(followup, str) and len(followup) > 5
+                and followups_used < MAX_FOLLOWUPS and 2 <= score <= 6):  # probe only vague-but-relevant answers
             entry["followup"] = str(followup)[:300]
             state["awaiting_followup"] = True
             resp_q = str(followup)

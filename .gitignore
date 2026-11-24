@@ -10,4 +10,8 @@ recordings/
 uploads/
 .secret
 ADMIN_PASS.txt
+LINK
+.env
+.env.*
+!.env.example
 *.pid

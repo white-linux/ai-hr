@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 64" role="img" aria-label="Ishveren — AI Recruiter">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6366f1"/><stop offset=".55" stop-color="#8b5cf6"/><stop offset="1" stop-color="#06b6d4"/>
+    </linearGradient>
+    <linearGradient id="s" x1="0" y1="0" x2="0" y2="64" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fff" stop-opacity=".28"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#g)"/><rect width="64" height="64" rx="16" fill="url(#s)"/>
+  <circle cx="27" cy="18.5" r="6.2" fill="#fff"/>
+  <path d="M15.5 35.5 L26 46 L46.5 25.5" fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <path transform="translate(1.5 -2.5)" d="M48 9.5 C48.9 13.6 50.4 15.1 54.5 16 C50.4 16.9 48.9 18.4 48 22.5 C47.1 18.4 45.6 16.9 41.5 16 C45.6 15.1 47.1 13.6 48 9.5 Z" fill="#fef3c7"/>
+  <text x="80" y="38" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="30" font-weight="800" fill="#e2e8f0" letter-spacing="-0.5">Ishveren</text>
+  <text x="81" y="56" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="11.5" font-weight="600" fill="#818cf8" letter-spacing="2.6">AI RECRUITER</text>
+</svg>
