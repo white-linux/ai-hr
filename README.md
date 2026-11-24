@@ -16,6 +16,10 @@
   <img src="https://img.shields.io/badge/Interviews-EN%20%7C%20RU%20%7C%20AZ-10B981?style=flat-square" alt="Languages: EN, RU, AZ">
 </p>
 
+<p align="center">
+  Built by <a href="https://github.com/white-linux"><strong>Abdullah Ibrahim (@white-linux)</strong></a> &amp; <a href="https://github.com/Vugar-Abdullayev"><strong>Vugar Abdullayev (@Vugar-Abdullayev)</strong></a>
+</p>
+
 ---
 
 ## Overview
@@ -202,3 +206,26 @@ Interactive OpenAPI docs are available automatically at **`http://localhost:8000
 - **Session cookies:** Signed with HMAC-SHA256 using `HR_SECRET` or a randomly generated, `0600`-permissioned `.secret` file.
 - **Admin-only media:** Candidate interview recordings and live preview frames require authenticated `ADMIN` sessions.
 - **Safe defaults for Git:** All sensitive and runtime files (`API.txt`, `ADMIN_PASS.txt`, `PASSWD.txt`, `.secret`, `.env*`, `hr.db`, `uploads/`, `recordings/`, `*.log`, `*.pid`) are excluded via `.gitignore`.
+
+---
+
+## Authors
+
+<table>
+  <tr>
+    <td align="center">
+      <a href="https://github.com/white-linux">
+        <img src="https://github.com/white-linux.png?size=96" width="80" style="border-radius:50%" alt="Abdullah Ibrahim"/><br/>
+        <sub><b>Abdullah Ibrahim</b></sub><br/>
+        <sub>@white-linux</sub>
+      </a>
+    </td>
+    <td align="center">
+      <a href="https://github.com/Vugar-Abdullayev">
+        <img src="https://github.com/Vugar-Abdullayev.png?size=96" width="80" style="border-radius:50%" alt="Vugar Abdullayev"/><br/>
+        <sub><b>Vugar Abdullayev</b></sub><br/>
+        <sub>@Vugar-Abdullayev</sub>
+      </a>
+    </td>
+  </tr>
+</table>
